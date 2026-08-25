@@ -22,6 +22,8 @@ typedef struct {
 } name_state_t;
 static name_state_t s_name;
 
+/* “Start” 按钮回调：收起软键盘，读取输入框里的昵称并回调 on_name
+ * 交给上层（snakeInit）发起网络连接。昵称为空时用默认名。 */
 static void name_start_pressed(lv_event_t *e)
 {
     (void)e;
@@ -31,18 +33,23 @@ static void name_start_pressed(lv_event_t *e)
     s_name.on_name((n && n[0]) ? n : UI_DEFAULT_NAME);
 }
 
+/* 输入框聚焦回调：弹出底部软键盘并绑定到该输入框。 */
 static void name_focus_cb(lv_event_t *e)
 {
     lv_obj_clear_flag(s_name.kb, LV_OBJ_FLAG_HIDDEN);   /* 聚焦 -> 显示键盘 */
     lv_keyboard_set_textarea(s_name.kb, lv_event_get_target(e));
 }
 
+/* 输入框失焦回调：隐藏底部软键盘。 */
 static void name_defocus_cb(lv_event_t *e)
 {
     (void)e;
     lv_obj_add_flag(s_name.kb, LV_OBJ_FLAG_HIDDEN);     /* 失焦 -> 隐藏键盘 */
 }
 
+/* 创建用户名屏：标题 + 提示文字 + 昵称输入框 + Start 按钮 + 状态提示，
+ * 底部是默认隐藏的软键盘（聚焦输入框时弹出）。
+ * 返回值：用户名屏对象（由上层 lv_scr_load() 加载）。 */
 lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const char *def_name)
 {
     memset(&s_name, 0, sizeof(s_name));
@@ -53,18 +60,18 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x10202f), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    lv_obj_t *title = lv_label_create(scr);
+    lv_obj_t *title = lv_label_create(scr);                /* 屏标题 */
     lv_label_set_text(title, "Snake - Multiplayer");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_26, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0x7fc8ff), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 25);
 
-    lv_obj_t *tip = lv_label_create(scr);
+    lv_obj_t *tip = lv_label_create(scr);                  /* 操作提示文字 */
     lv_label_set_text(tip, "Enter your username");
     lv_obj_set_style_text_color(tip, lv_color_hex(0x9fb3c8), 0);
     lv_obj_align(tip, LV_ALIGN_TOP_MID, 0, 70);
 
-    lv_obj_t *ta = lv_textarea_create(scr);
+    lv_obj_t *ta = lv_textarea_create(scr);                /* 昵称输入框（单行，聚焦弹软键盘） */
     lv_textarea_set_one_line(ta, 1);
     lv_textarea_set_text(ta, def_name ? def_name : UI_DEFAULT_NAME);
     lv_obj_set_size(ta, 380, 44);
@@ -72,7 +79,7 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
     lv_obj_set_style_bg_color(ta, lv_color_hex(0x1c3346), 0);
     lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
 
-    lv_obj_t *btn = lv_btn_create(scr);
+    lv_obj_t *btn = lv_btn_create(scr);                    /* “Start”按钮：确认昵称并连接服务器 */
     lv_obj_set_size(btn, 180, 48);
     lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 180);
     lv_obj_set_style_radius(btn, 8, 0);
@@ -81,12 +88,12 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
     lv_label_set_text(bl, "Start");
     lv_obj_center(bl);
 
-    lv_obj_t *st = lv_label_create(scr);
+    lv_obj_t *st = lv_label_create(scr);                   /* 状态提示：连接中 / 失败等反馈文字 */
     lv_label_set_text(st, " ");
     lv_obj_set_style_text_color(st, lv_color_hex(0x7fc8ff), 0);
     lv_obj_align(st, LV_ALIGN_TOP_MID, 0, 250);
 
-    lv_obj_t *kb = lv_keyboard_create(scr);
+    lv_obj_t *kb = lv_keyboard_create(scr);                /* 底部软键盘：默认隐藏，输入框聚焦时弹出 */
     lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_color(kb, lv_color_hex(0x182c3c), 0);
     lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, 0);
@@ -103,6 +110,7 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
     return scr;
 }
 
+/* 更新用户名屏的状态提示文字（如 Connecting... / Connection lost）。 */
 void ui_name_set_status(lv_obj_t *s, const char *msg)
 {
     (void)s;
@@ -116,12 +124,16 @@ typedef struct {
 } main_state_t;
 static main_state_t s_main;
 
+/* 主菜单两个模式按钮的共用回调：把绑定的模式字符串
+ * （single / multi）回调 on_mode 交给上层处理。 */
 static void main_mode_pressed(lv_event_t *e)
 {
     const char *mode = (const char *)lv_event_get_user_data(e);
     if (s_main.on_mode && mode) s_main.on_mode(mode);
 }
 
+/* 创建主菜单屏：标题 + 两个大按钮（单人模式 / 多人模式）+ 底部状态提示。
+ * 返回值：主菜单屏对象。 */
 lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
 {
     memset(&s_main, 0, sizeof(s_main));
@@ -132,13 +144,13 @@ lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x10202f), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    lv_obj_t *title = lv_label_create(scr);
+    lv_obj_t *title = lv_label_create(scr);                /* 屏标题 */
     lv_label_set_text(title, "Select Mode");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_26, 0);
     lv_obj_set_style_text_color(title, lv_color_hex(0x7fc8ff), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
 
-    lv_obj_t *b1 = lv_btn_create(scr);
+    lv_obj_t *b1 = lv_btn_create(scr);                     /* 单人模式按钮：进入单人房间 */
     lv_obj_set_size(b1, 260, 150);
     lv_obj_align(b1, LV_ALIGN_LEFT_MID, 60, 0);
     lv_obj_set_style_radius(b1, 12, 0);
@@ -150,7 +162,7 @@ lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
     lv_obj_center(l1);
     lv_obj_add_event_cb(b1, main_mode_pressed, LV_EVENT_CLICKED, (void *)MODE_SINGLE);
 
-    lv_obj_t *b2 = lv_btn_create(scr);
+    lv_obj_t *b2 = lv_btn_create(scr);                     /* 多人模式按钮：进入房间选择屏 */
     lv_obj_set_size(b2, 260, 150);
     lv_obj_align(b2, LV_ALIGN_RIGHT_MID, -60, 0);
     lv_obj_set_style_radius(b2, 12, 0);
@@ -162,7 +174,7 @@ lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
     lv_obj_center(l2);
     lv_obj_add_event_cb(b2, main_mode_pressed, LV_EVENT_CLICKED, (void *)MODE_MULTI);
 
-    lv_obj_t *st = lv_label_create(scr);
+    lv_obj_t *st = lv_label_create(scr);                   /* 底部状态提示（如 Connected / 错误信息） */
     lv_label_set_text(st, " ");
     lv_obj_set_style_text_color(st, lv_color_hex(0x7fc8ff), 0);
     lv_obj_align(st, LV_ALIGN_BOTTOM_MID, 0, -30);
@@ -171,6 +183,7 @@ lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
     return scr;
 }
 
+/* 更新主菜单屏的状态提示文字（如 Connected / 服务器错误信息）。 */
 void ui_main_set_status(lv_obj_t *s, const char *msg)
 {
     (void)s;

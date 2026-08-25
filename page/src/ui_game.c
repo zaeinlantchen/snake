@@ -36,6 +36,9 @@ static game_state_t s_game;
 static lv_color_t s_canvas_buf[UI_CANVAS_W * UI_CANVAS_H];
 
 /* ---------------- 摇杆 ---------------- */
+
+/* 摇杆松开 / 触摸丢失回调：把摇杆头弹回中心。
+ * 游戏逻辑上“保持上次方向”，因此松手后方向不重置，蛇继续沿原方向前进。 */
 static void joystick_release(lv_event_t *e)
 {
     (void)e;
@@ -45,6 +48,11 @@ static void joystick_release(lv_event_t *e)
     lv_obj_set_pos(s_game.joy_knob, w / 2 - kn / 2, h / 2 - kn / 2);
 }
 
+/* 摇杆拖动回调（LV_EVENT_PRESSING，手指移动时反复触发）：
+ * 1) 计算手指相对摇杆中心的偏移 (dx, dy)；
+ * 2) 偏移超过死区后按 8 个扇区判定方向（4 个基本方向 + 4 个对角线方向），
+ *    并借助 s_game.last_sent_dir 去重——仅当方向改变时回调 on_dir 发给服务端；
+ * 3) 把摇杆头移动到手指位置（限制在底座半径内，提供视觉反馈）。 */
 static void joystick_pressing(lv_event_t *e)
 {
     (void)e;
@@ -62,9 +70,19 @@ static void joystick_pressing(lv_event_t *e)
 
     const int dead = 18;
     snake_dir_t dir = (snake_dir_t)s_game.last_sent_dir;
-    if (abs(dx) >= dead || abs(dy) >= dead) {
-        if (abs(dx) >= abs(dy)) dir = (dx < 0) ? SNAKE_DIR_LEFT : SNAKE_DIR_RIGHT;
-        else                    dir = (dy < 0) ? SNAKE_DIR_UP   : SNAKE_DIR_DOWN;
+    int h = (abs(dx) >= dead) ? 1 : 0;   /* 水平分量超过死区 */
+    int v = (abs(dy) >= dead) ? 1 : 0;   /* 垂直分量超过死区 */
+    if (h || v) {
+        int sx = (dx < 0) ? -1 : 1;      /* 左/右 */
+        int sy = (dy < 0) ? -1 : 1;      /* 上/下 */
+        if (h && v) {                    /* 对角线方向 */
+            if (sx < 0) dir = (sy < 0) ? SNAKE_DIR_UP_LEFT : SNAKE_DIR_DOWN_LEFT;
+            else        dir = (sy < 0) ? SNAKE_DIR_UP_RIGHT : SNAKE_DIR_DOWN_RIGHT;
+        } else if (h) {
+            dir = (sx < 0) ? SNAKE_DIR_LEFT : SNAKE_DIR_RIGHT;
+        } else {
+            dir = (sy < 0) ? SNAKE_DIR_UP : SNAKE_DIR_DOWN;
+        }
     }
 
     int radius = lv_obj_get_width(s_game.joy_base) / 2 - 12;
@@ -82,8 +100,15 @@ static void joystick_pressing(lv_event_t *e)
     }
 }
 
+/* “Exit” 按钮回调：通知上层退出当前房间并返回主菜单。 */
 static void quit_pressed(lv_event_t *e) { (void)e; if (s_game.on_quit) s_game.on_quit(); }
 
+/* 创建游戏屏（800×480），自上而下分为三个区域：
+ *   ① 顶部菜单栏（hud 标签 + Exit 按钮）：显示本机昵称/得分/名次/无敌秒数，以及退出按钮；
+ *   ② 中部棋盘（canvas）：612×374 的 LVGL 画布，绘制 36×22 网格、食物与所有蛇；
+ *   ③ 左下虚拟摇杆（base 底座 + knob 摇杆头）：拖动控制蛇的 8 方向移动。
+ * 屏幕中央另有一个默认隐藏的“本局结束”遮罩（over）。
+ * 返回值：游戏屏对象（由上层用 lv_scr_load() 切换到该屏）。 */
 lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir)
 {
     memset(&s_game, 0, sizeof(s_game));
@@ -92,12 +117,12 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     s_game.my_id = -1;
     s_game.last_sent_dir = -1;      /* 尚未发送，首次摇杆输入必然触发 */
 
-    lv_obj_t *scr = lv_obj_create(parent ? parent : NULL);
+    lv_obj_t *scr = lv_obj_create(parent ? parent : NULL);   /* 游戏屏根对象：深色背景铺满整屏 */
     lv_obj_set_size(scr, LV_HOR_RES, LV_VER_RES);
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x0a1622), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
-    s_game.hud = lv_label_create(scr);
+    s_game.hud = lv_label_create(scr);                       /* 顶部菜单栏：本机昵称、得分、名次、无敌剩余秒数 */
     lv_obj_set_size(s_game.hud, 800, 40);
     lv_obj_set_pos(s_game.hud, 0, 0);
     lv_label_set_text(s_game.hud, "Score: 0");
@@ -106,7 +131,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_set_style_pad_left(s_game.hud, 14, 0);
     lv_obj_set_style_pad_top(s_game.hud, 8, 0);
 
-    lv_obj_t *back = lv_btn_create(scr);
+    lv_obj_t *back = lv_btn_create(scr);                     /* 退出按钮：点击后离开房间并返回主菜单 */
     lv_obj_set_size(back, 110, 34);
     lv_obj_set_pos(back, 676, 44);
     lv_obj_set_style_radius(back, 8, 0);
@@ -116,11 +141,11 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_center(bl);
     lv_obj_add_event_cb(back, quit_pressed, LV_EVENT_CLICKED, NULL);
 
-    s_game.canvas = lv_canvas_create(scr);
+    s_game.canvas = lv_canvas_create(scr);                   /* 棋盘画布：36×22 网格，像素 612×374，绘制食物与所有蛇 */
     lv_canvas_set_buffer(s_game.canvas, s_canvas_buf, UI_CANVAS_W, UI_CANVAS_H, LV_IMG_CF_TRUE_COLOR);
     lv_obj_set_pos(s_game.canvas, 176, 92);
 
-    lv_obj_t *base = lv_obj_create(scr);
+    lv_obj_t *base = lv_obj_create(scr);                     /* 摇杆底座：圆形半透明区域，接收触摸以判定方向 */
     lv_obj_set_size(base, 160, 160);
     lv_obj_set_pos(base, 8, 210);
     lv_obj_set_style_radius(base, 80, 0);
@@ -129,7 +154,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(base, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *knob = lv_obj_create(base);
+    lv_obj_t *knob = lv_obj_create(base);                    /* 摇杆头：跟随手指移动，提供操作反馈 */
     lv_obj_set_size(knob, 64, 64);
     lv_obj_set_pos(knob, 48, 48);
     lv_obj_set_style_radius(knob, 32, 0);
@@ -143,7 +168,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_add_event_cb(base, joystick_release, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(base, joystick_release, LV_EVENT_PRESS_LOST, NULL);
 
-    lv_obj_t *over = lv_obj_create(scr);
+    lv_obj_t *over = lv_obj_create(scr);                     /* 本局结束遮罩：默认隐藏，收到 over 消息后弹出 */
     lv_obj_set_size(over, 560, 260);
     lv_obj_align(over, LV_ALIGN_CENTER, 40, 20);
     lv_obj_set_style_bg_color(over, lv_color_hex(0x101a24), 0);
@@ -151,7 +176,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_set_style_radius(over, 16, 0);
     lv_obj_clear_flag(over, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(over, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *ol = lv_label_create(over);
+    lv_obj_t *ol = lv_label_create(over);                    /* 遮罩内文字：显示胜者昵称或 Game Over 及本机得分 */
     lv_label_set_text(ol, "Game Over");
     lv_obj_center(ol);
     lv_obj_set_style_text_font(ol, &lv_font_montserrat_24, 0);
@@ -164,6 +189,8 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     return scr;
 }
 
+/* 调色板：根据服务端下发的 color 索引（0~7）返回蛇身颜色，
+ * 同一房间内不同玩家颜色不同，便于区分。 */
 lv_color_t ui_palette_color(int index)
 {
     switch (index % 8) {
@@ -179,6 +206,9 @@ lv_color_t ui_palette_color(int index)
     }
 }
 
+/* 绘制整个棋盘到 canvas，顺序为：
+ * 背景底色 → 网格线 → 边框 → 食物（红色圆角方块）→ 所有蛇
+ * （蛇头更亮且稍大；无敌中的蛇整体带白色描边）。 */
 static void draw_board(const snake_world_t *w)
 {
     lv_color_t bg    = lv_color_hex(0x0d1b26);
@@ -245,6 +275,9 @@ static void draw_board(const snake_world_t *w)
     lv_obj_invalidate(s_game.canvas);
 }
 
+/* 刷新游戏屏：用最新世界状态重画棋盘，并更新顶部菜单栏文字
+ * （本机昵称、得分、名次 rank/总人数、无敌剩余秒数）。
+ * 每收到一帧服务端广播的 state 消息都会调用一次。 */
 void ui_game_update(lv_obj_t *s, const snake_world_t *w)
 {
     (void)s;
@@ -252,26 +285,35 @@ void ui_game_update(lv_obj_t *s, const snake_world_t *w)
     if (w->my_id >= 0) s_game.my_id = w->my_id;
 
     const snake_player_t *me = NULL;
+    int i, rank = 1;
     char hud[160];
-    for (int i = 0; i < w->nsnakes; i++)
+    for (i = 0; i < w->nsnakes; i++)
         if (w->snakes[i].id == s_game.my_id) { me = &w->snakes[i]; break; }
-    if (me && me->inv > 0) {
-        snprintf(hud, sizeof(hud), "You: %s   Score: %d   Invincible: %ds",
-                 me->name, me->score, me->inv);
-    } else if (me) {
-        snprintf(hud, sizeof(hud), "You: %s   Score: %d", me->name, me->score);
+    if (me) {
+        /* 名次：得分高于我的蛇数 + 1（得分高者名次靠前） */
+        for (i = 0; i < w->nsnakes; i++)
+            if (w->snakes[i].id != me->id && w->snakes[i].score > me->score) rank++;
+        if (me->inv > 0) {
+            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d   Invincible: %ds",
+                     me->name, me->score, rank, w->nsnakes, me->inv);
+        } else {
+            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d",
+                     me->name, me->score, rank, w->nsnakes);
+        }
     } else {
         snprintf(hud, sizeof(hud), "Score: %d   Alive: %d", w->my_score, w->nsnakes);
     }
     lv_label_set_text(s_game.hud, hud);
 }
 
+/* 显示“本局结束”遮罩：有胜者时显示 "Winner: 昵称"，
+ * 无人存活（平局 / 单人失败）时显示 "Game Over"，并附带本机得分。 */
 void ui_game_set_over(lv_obj_t *s, const snake_world_t *w)
 {
     (void)s;
     char buf[192];
     if (w->winner_id == -1) {
-        snprintf(buf, sizeof(buf), "Draw!\n\nYour score: %d", w->my_score);
+        snprintf(buf, sizeof(buf), "Game Over\n\nYour score: %d", w->my_score);
     } else {
         const char *wname = "?";
         for (int i = 0; i < w->nsnakes; i++)
@@ -282,12 +324,14 @@ void ui_game_set_over(lv_obj_t *s, const snake_world_t *w)
     lv_obj_clear_flag(s_game.over, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* 隐藏“本局结束”遮罩（服务端广播 round 开启新一局时调用）。 */
 void ui_game_clear_over(lv_obj_t *s)
 {
     (void)s;
     if (s_game.over) lv_obj_add_flag(s_game.over, LV_OBJ_FLAG_HIDDEN);
 }
 
+/* 记录本机玩家 id，用于在世界状态中识别“我的蛇”（统计得分与名次）。 */
 void ui_game_set_my_id(int my_id)
 {
     s_game.my_id = my_id;

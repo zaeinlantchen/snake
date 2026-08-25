@@ -87,10 +87,14 @@ static void send_dir(snake_dir_t d)
     cJSON_AddStringToObject(o, "type", MSG_DIR);
     const char *dir = DIR_STRING_RIGHT;
     switch (d) {
-        case SNAKE_DIR_UP:    dir = DIR_STRING_UP;    break;
-        case SNAKE_DIR_DOWN:  dir = DIR_STRING_DOWN;  break;
-        case SNAKE_DIR_LEFT:  dir = DIR_STRING_LEFT;  break;
-        case SNAKE_DIR_RIGHT: dir = DIR_STRING_RIGHT; break;
+        case SNAKE_DIR_UP:         dir = DIR_STRING_UP;         break;
+        case SNAKE_DIR_DOWN:       dir = DIR_STRING_DOWN;       break;
+        case SNAKE_DIR_LEFT:       dir = DIR_STRING_LEFT;       break;
+        case SNAKE_DIR_RIGHT:      dir = DIR_STRING_RIGHT;      break;
+        case SNAKE_DIR_UP_LEFT:    dir = DIR_STRING_UP_LEFT;    break;
+        case SNAKE_DIR_UP_RIGHT:   dir = DIR_STRING_UP_RIGHT;   break;
+        case SNAKE_DIR_DOWN_LEFT:  dir = DIR_STRING_DOWN_LEFT;  break;
+        case SNAKE_DIR_DOWN_RIGHT: dir = DIR_STRING_DOWN_RIGHT; break;
     }
     cJSON_AddStringToObject(o, "dir", dir);
     send_json(o);

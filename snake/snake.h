@@ -21,12 +21,16 @@
 extern "C" {
 #endif
 
-/* 方向（供界面层/摇杆使用） */
+/* 方向（供界面层/摇杆使用）：4 个基本方向 + 4 个对角线方向 */
 typedef enum {
     SNAKE_DIR_UP = 0,
     SNAKE_DIR_DOWN,
     SNAKE_DIR_LEFT,
-    SNAKE_DIR_RIGHT
+    SNAKE_DIR_RIGHT,
+    SNAKE_DIR_UP_LEFT,
+    SNAKE_DIR_UP_RIGHT,
+    SNAKE_DIR_DOWN_LEFT,
+    SNAKE_DIR_DOWN_RIGHT
 } snake_dir_t;
 
 typedef struct { int x, y; } snake_point_t;

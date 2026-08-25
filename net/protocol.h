@@ -31,10 +31,14 @@
 #define PROTO_NETCLOSED "__NETCLOSED__"
 
 /* ---------------- 方向 ---------------- */
-#define DIR_STRING_UP     "up"
-#define DIR_STRING_DOWN   "down"
-#define DIR_STRING_LEFT   "left"
-#define DIR_STRING_RIGHT  "right"
+#define DIR_STRING_UP          "up"
+#define DIR_STRING_DOWN        "down"
+#define DIR_STRING_LEFT        "left"
+#define DIR_STRING_RIGHT       "right"
+#define DIR_STRING_UP_LEFT     "up_left"
+#define DIR_STRING_UP_RIGHT    "up_right"
+#define DIR_STRING_DOWN_LEFT   "down_left"
+#define DIR_STRING_DOWN_RIGHT  "down_right"
 
 /* ---------------- 模式 ---------------- */
 #define MODE_SINGLE  "single"
