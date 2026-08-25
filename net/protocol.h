@@ -46,8 +46,8 @@
 
 /* ---------------- 地图 / 游戏常量 ---------------- */
 #define SERVER_PORT          5000
-#define SNAKE_COLS           36
-#define SNAKE_ROWS           22
+#define SNAKE_COLS           40
+#define SNAKE_ROWS           24
 #define SNAKE_FOOD_COUNT     3
 #define SNAKE_MAX_LEN        256
 #define SNAKE_MAX_NAME       16

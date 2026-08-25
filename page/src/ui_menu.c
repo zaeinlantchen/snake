@@ -73,8 +73,9 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
 
     lv_obj_t *ta = lv_textarea_create(scr);                /* 昵称输入框（单行，聚焦弹软键盘） */
     lv_textarea_set_one_line(ta, 1);
+    lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
     lv_textarea_set_text(ta, def_name ? def_name : UI_DEFAULT_NAME);
-    lv_obj_set_size(ta, 380, 44);
+    lv_obj_set_size(ta, 380, 60);
     lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, 110);
     lv_obj_set_style_bg_color(ta, lv_color_hex(0x1c3346), 0);
     lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);

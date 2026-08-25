@@ -15,9 +15,11 @@
 
 #include "../inc/ui_page.h"
 
-#define UI_CELL        17
-#define UI_CANVAS_W    (SNAKE_COLS * UI_CELL)   /* 612 */
-#define UI_CANVAS_H    (SNAKE_ROWS * UI_CELL)   /* 374 */
+#define UI_CELL        20
+#define UI_CANVAS_W    (SNAKE_COLS * UI_CELL)   /* 800 */
+#define UI_CANVAS_H    (SNAKE_ROWS * UI_CELL)   /* 480 */
+
+#define JOY_MAX_RADIUS  100     /* 摇杆头相对底座中心的最大偏移半径（px） */
 
 typedef struct {
     lv_obj_t *canvas;
@@ -52,7 +54,7 @@ static void joystick_release(lv_event_t *e)
  * 1) 计算手指相对摇杆中心的偏移 (dx, dy)；
  * 2) 偏移超过死区后按 8 个扇区判定方向（4 个基本方向 + 4 个对角线方向），
  *    并借助 s_game.last_sent_dir 去重——仅当方向改变时回调 on_dir 发给服务端；
- * 3) 把摇杆头移动到手指位置（限制在底座半径内，提供视觉反馈）。 */
+ * 3) 把摇杆头移动到手指位置（偏移被限制在 JOY_MAX_RADIUS=100px 内）。 */
 static void joystick_pressing(lv_event_t *e)
 {
     (void)e;
@@ -85,14 +87,16 @@ static void joystick_pressing(lv_event_t *e)
         }
     }
 
-    int radius = lv_obj_get_width(s_game.joy_base) / 2 - 12;
+    const int radius = JOY_MAX_RADIUS;                       /* 摇杆头最大偏移半径 100px */
     double dist = sqrt((double)dx * dx + (double)dy * dy);
     if (dist > radius) { dx = (int)(dx * radius / dist); dy = (int)(dy * radius / dist); }
 
     int bw = lv_obj_get_width(s_game.joy_base);
     int bh = lv_obj_get_height(s_game.joy_base);
     int kn = lv_obj_get_width(s_game.joy_knob);
-    lv_obj_set_pos(s_game.joy_knob, bw / 2 + dx - kn / 2, bh / 2 + dy - kn / 2);
+    int offset_x = bw / 2 + dx - kn / 2;
+    int offset_y = bh / 2 + dy - kn / 2;
+    lv_obj_set_pos(s_game.joy_knob, offset_x, offset_y);
 
     if ((int)dir != s_game.last_sent_dir) {
         s_game.last_sent_dir = (int)dir;
@@ -103,10 +107,10 @@ static void joystick_pressing(lv_event_t *e)
 /* “Exit” 按钮回调：通知上层退出当前房间并返回主菜单。 */
 static void quit_pressed(lv_event_t *e) { (void)e; if (s_game.on_quit) s_game.on_quit(); }
 
-/* 创建游戏屏（800×480），自上而下分为三个区域：
+/* 创建游戏屏（800×480，整屏即棋盘）：
  *   ① 顶部菜单栏（hud 标签 + Exit 按钮）：显示本机昵称/得分/名次/无敌秒数，以及退出按钮；
- *   ② 中部棋盘（canvas）：612×374 的 LVGL 画布，绘制 36×22 网格、食物与所有蛇；
- *   ③ 左下虚拟摇杆（base 底座 + knob 摇杆头）：拖动控制蛇的 8 方向移动。
+ *   ② 整屏棋盘（canvas）：800×480 的 LVGL 画布，绘制 40×24 网格、食物与所有蛇；
+ *   ③ 左下虚拟摇杆（base 底座 + knob 摇杆头）：透明底座叠在棋盘上，拖动控制 8 方向移动。
  * 屏幕中央另有一个默认隐藏的“本局结束”遮罩（over）。
  * 返回值：游戏屏对象（由上层用 lv_scr_load() 切换到该屏）。 */
 lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir)
@@ -141,25 +145,29 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_center(bl);
     lv_obj_add_event_cb(back, quit_pressed, LV_EVENT_CLICKED, NULL);
 
-    s_game.canvas = lv_canvas_create(scr);                   /* 棋盘画布：36×22 网格，像素 612×374，绘制食物与所有蛇 */
+    s_game.canvas = lv_canvas_create(scr);                   /* 整屏棋盘画布：40×24 网格，像素 800×480，绘制食物与所有蛇 */
     lv_canvas_set_buffer(s_game.canvas, s_canvas_buf, UI_CANVAS_W, UI_CANVAS_H, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_set_pos(s_game.canvas, 176, 92);
+    lv_obj_set_pos(s_game.canvas, 0, 0);
 
-    lv_obj_t *base = lv_obj_create(scr);                     /* 摇杆底座：圆形半透明区域，接收触摸以判定方向 */
-    lv_obj_set_size(base, 160, 160);
-    lv_obj_set_pos(base, 8, 210);
-    lv_obj_set_style_radius(base, 80, 0);
+    lv_obj_t *base = lv_obj_create(scr);                     /* 摇杆底座：圆形透明区域，叠在棋盘左下，接收触摸以判定方向 */
+    lv_obj_set_size(base, 300, 300);
+    lv_obj_set_pos(base, 0, 180);
+    lv_obj_set_style_radius(base, 150, 0);
     lv_obj_set_style_bg_color(base, lv_color_hex(0x22394b), 0);
-    lv_obj_set_style_bg_opa(base, LV_OPA_60, 0);
+    lv_obj_set_style_bg_opa(base, 0, 0);                     /* 透明背景，不遮挡棋盘 */
+    lv_obj_set_style_pad_all(base, 0, 0);                    /* 关键：去掉默认主题的 20px 内边距，否则子控件坐标被整体偏移一个网格 */
+    lv_obj_set_style_border_width(base, 0, 0);             /* 去掉边框,先注释，用于作为摇杆头的参照物 */
     lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(base, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *knob = lv_obj_create(base);                    /* 摇杆头：跟随手指移动，提供操作反馈 */
-    lv_obj_set_size(knob, 64, 64);
-    lv_obj_set_pos(knob, 48, 48);
-    lv_obj_set_style_radius(knob, 32, 0);
+    lv_obj_t *knob = lv_obj_create(base);                    /* 摇杆头：跟随手指移动，默认位于底座中心，提供操作反馈 */
+    lv_obj_set_size(knob, 40, 40);
+    lv_obj_set_style_pad_all(knob, 0, 0);                    /* 去掉默认主题内边距 */
+    lv_obj_set_pos(knob, 130, 130);                          /* (300-40)/2：位于 300×300 底座正中心 */
+    lv_obj_set_style_radius(knob, 20, 0);
     lv_obj_set_style_bg_color(knob, lv_color_hex(0x59d9ff), 0);
     lv_obj_set_style_bg_opa(knob, LV_OPA_90, 0);
+    lv_obj_set_style_border_width(knob, 0, 0);               /* 去掉边框 */
     lv_obj_clear_flag(knob, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(knob, LV_OBJ_FLAG_CLICKABLE);   /* 不拦截触摸，确保按到底座 */
     lv_obj_set_style_shadow_width(knob, 0, 0);
@@ -171,6 +179,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_t *over = lv_obj_create(scr);                     /* 本局结束遮罩：默认隐藏，收到 over 消息后弹出 */
     lv_obj_set_size(over, 560, 260);
     lv_obj_align(over, LV_ALIGN_CENTER, 40, 20);
+    lv_obj_set_style_pad_all(over, 0, 0);                    /* 去掉默认内边距，保证内部文字真正居中 */
     lv_obj_set_style_bg_color(over, lv_color_hex(0x101a24), 0);
     lv_obj_set_style_bg_opa(over, LV_OPA_90, 0);
     lv_obj_set_style_radius(over, 16, 0);
@@ -181,6 +190,10 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_center(ol);
     lv_obj_set_style_text_font(ol, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(ol, lv_color_hex(0xffffff), 0);
+
+    /* 菜单栏与退出按钮调到最顶层：必须在棋盘/摇杆/遮罩创建之后再调用才生效 */
+    lv_obj_move_foreground(s_game.hud);
+    lv_obj_move_foreground(back);
 
     s_game.over = over;
     s_game.over_label = ol;
@@ -269,7 +282,7 @@ static void draw_board(const snake_world_t *w)
             int px = cx * UI_CELL, py = cy * UI_CELL;
             if (j == 0) { sd.bg_color = lv_color_mix(base, lv_color_white(), 96); sd.radius = 6; }
             else        { sd.bg_color = base; sd.radius = 4; }
-            lv_canvas_draw_rect(s_game.canvas, px + 1, py + 1, UI_CELL - 2, UI_CELL - 2, &sd);
+            lv_canvas_draw_rect(s_game.canvas, px + 1, py + 1, UI_CELL, UI_CELL, &sd);
         }
     }
     lv_obj_invalidate(s_game.canvas);
