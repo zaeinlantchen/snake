@@ -127,13 +127,14 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     s_game.hud = lv_label_create(scr);                       /* 顶部菜单栏：本机昵称、得分、名次、无敌剩余秒数 */
-    lv_obj_set_size(s_game.hud, 800, 40);
+    lv_obj_set_size(s_game.hud, 800, 100);
     lv_obj_set_pos(s_game.hud, 0, 0);
     lv_label_set_text(s_game.hud, "Score: 0");
     lv_obj_set_style_text_font(s_game.hud, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(s_game.hud, lv_color_hex(0x7fc8ff), 0);
     lv_obj_set_style_pad_left(s_game.hud, 14, 0);
     lv_obj_set_style_pad_top(s_game.hud, 8, 0);
+    lv_obj_clear_flag(s_game.hud, LV_OBJ_FLAG_CLICKABLE); // 只显示文字，不拦截触摸事件
 
     lv_obj_t *back = lv_btn_create(scr);                     /* 退出按钮：点击后离开房间并返回主菜单 */
     lv_obj_set_size(back, 110, 34);
