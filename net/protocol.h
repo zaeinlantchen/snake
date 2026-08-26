@@ -1,44 +1,99 @@
 /*
  * protocol.h  （客户端副本）
  *
- * 必须与 server/inc/protocol.h 保持完全一致，否则无法互通。
- * 详见服务端 protocol.h 中的 JSON 协议说明。
+ * 贪吃蛇多人联机游戏 —— 客户端 / 服务端通信协议定义（纯二进制）
+ *
+ * 本文件同时被 server/src/server.c 与 LunaUI/net/net.c 使用（各自副本），
+ * 两边必须保持完全一致，否则无法互通。
+ *
+ * ------------------------------------------------------------------
+ * 传输层：TCP
+ * 消息格式：每条消息为一个二进制帧：
+ *
+ *     [ 1 字节 类型 ][ 2 字节 负载长度(大端) ][ 负载 ]
+ *
+ * 即帧头 3 字节（PROTO_HEADER_LEN），负载长度不含帧头，最大
+ * PROTO_MAX_PAYLOAD。负载内多字节整数一律大端序，请用 pr_put_u16/pr_get_u16 等读写。
+ * ------------------------------------------------------------------
+ *
+ *  客户端 -> 服务端
+ *    MSG_JOIN(1)        负载: name[16]（不足补 0）   注册用户名；随后服务端回 welcome
+ *    MSG_MODE(2)        负载: mode u8, wrap u8       选择模式并携带地图偏好
+ *                        mode: 0=single, 1=multi；wrap: 0=经典(撞墙死), 1=环形(穿墙)
+ *                        （wrap 仅在创建单人/新房间时生效，加入已有房间以房间为准）
+ *    MSG_ROOM_LIST(3)   无负载                        请求房间列表
+ *    MSG_CREATE_ROOM(4) 负载: wrap u8                创建新房间（多人），wrap: 0=经典, 1=环形
+ *    MSG_JOIN_ROOM(5)   负载: room u32               按房间号加入
+ *    MSG_RANDOM_JOIN(6) 无负载                        随机加入一个有空的房间
+ *    MSG_DIR(7)         负载: dir u8 (0..7)          设置方向（不能 180° 反转）
+ *    MSG_LEAVE(8)       无负载                        离开房间，回到主菜单（保持连接）
+ *    MSG_BYE(9)         无负载                        断开连接（可选）
+ *
+ *  服务端 -> 客户端
+ *    MSG_WELCOME(20)   负载: id u32, cols u16, rows u16
+ *    MSG_ROOMS(21)     负载: n u8，随后 n 个 { id u32, players u8, max u8, wrap u8 }
+ *    MSG_ROOM(22)      负载: room u32, mode u8, wrap u8
+ *                       wrap: 0=经典(撞墙死), 1=环形(穿墙)
+ *    MSG_STATE(23)     负载: 见下方 "STATE 帧格式"
+ *    MSG_OVER(24)      负载: winner i32（-1 平局/无人存活）
+ *    MSG_ROUND(25)     无负载                        新一局开始
+ *    MSG_ERROR(26)     负载: 以 '\0' 结尾的错误字符串
+ *
+ *  STATE 帧格式（全部大端）:
+ *    tick         u32
+ *    small_n      u16                      小食物数量
+ *    small_n ×    { px u16, py u16 }       小食物左上角像素坐标（4×4px）
+ *    big_n        u8                       大食物数量
+ *    big_n ×      { px u16, py u16 }       大食物左上角像素坐标（16×16px）
+ *    nsnakes      u8
+ *    nsnakes ×    {
+ *        id u32, color u8, len u16, score u16, inv u8, small_eaten u8,
+ *        name[16],
+ *        body[ len × { x u16, y u16 } ]    蛇身网格坐标
+ *    }
+ * ------------------------------------------------------------------
+ *
+ *  坐标约定：
+ *   - 蛇身 body 使用网格坐标 (0..SNAKE_COLS-1, 0..SNAKE_ROWS-1)，
+ *     每个网格 20×20px，渲染时由客户端放大到像素；
+ *   - 食物直接下发屏幕像素坐标（左上角），客户端按 4px(小)/16px(大) 直接绘制，
+ *     不再做网格换算。
+ *   - 地图类型由房间决定（wrap）：经典地图撞墙即死；环形地图越界从对侧出现。
+ *     服务端权威计算，客户端只渲染。
+ * ------------------------------------------------------------------
  */
 
 #ifndef SNAKE_PROTOCOL_H
 #define SNAKE_PROTOCOL_H
 
-/* ---------------- JSON 消息类型 ---------------- */
-#define MSG_JOIN        "join"
-#define MSG_MODE        "mode"
-#define MSG_ROOM_LIST   "room_list"
-#define MSG_CREATE_ROOM "create_room"
-#define MSG_JOIN_ROOM   "join_room"
-#define MSG_RANDOM_JOIN "random_join"
-#define MSG_DIR         "dir"
-#define MSG_LEAVE       "leave"
-#define MSG_BYE         "bye"
+#include <stdint.h>
+#include <string.h>
 
-#define MSG_WELCOME     "welcome"
-#define MSG_ROOMS       "rooms"
-#define MSG_ROOM        "room"
-#define MSG_STATE       "state"
-#define MSG_OVER        "over"
-#define MSG_ROUND       "round"
-#define MSG_ERROR       "error"
+/* ---------------- 二进制消息类型 ---------------- */
+#define MSG_JOIN        1
+#define MSG_MODE        2
+#define MSG_ROOM_LIST   3
+#define MSG_CREATE_ROOM 4
+#define MSG_JOIN_ROOM   5
+#define MSG_RANDOM_JOIN 6
+#define MSG_DIR         7
+#define MSG_LEAVE       8
+#define MSG_BYE         9
 
-/* 网络线程在连接断开时注入本内容，主线程据此感知断线（非 JSON）。 */
-#define PROTO_NETCLOSED "__NETCLOSED__"
+#define MSG_WELCOME     20
+#define MSG_ROOMS       21
+#define MSG_ROOM        22
+#define MSG_STATE       23
+#define MSG_OVER        24
+#define MSG_ROUND       25
+#define MSG_ERROR       26
 
-/* ---------------- 方向 ---------------- */
-#define DIR_STRING_UP          "up"
-#define DIR_STRING_DOWN        "down"
-#define DIR_STRING_LEFT        "left"
-#define DIR_STRING_RIGHT       "right"
-#define DIR_STRING_UP_LEFT     "up_left"
-#define DIR_STRING_UP_RIGHT    "up_right"
-#define DIR_STRING_DOWN_LEFT   "down_left"
-#define DIR_STRING_DOWN_RIGHT  "down_right"
+/* 客户端 net 模块在连接断开时通过 net_poll_msg() 返回的“类型”（内部信令） */
+#define MSG_NETCLOSED   255
+
+/* ---------------- 帧格式 ---------------- */
+#define PROTO_HEADER_LEN   3       /* 帧头：类型(1) + 负载长度(2, 大端) */
+#define PROTO_MAX_PAYLOAD  16384   /* 单帧负载最大字节数 */
 
 /* ---------------- 模式 ---------------- */
 #define MODE_SINGLE  "single"
@@ -46,15 +101,37 @@
 
 /* ---------------- 地图 / 游戏常量 ---------------- */
 #define SERVER_PORT          5000
-#define SNAKE_COLS           40
-#define SNAKE_ROWS           24
-#define SNAKE_FOOD_COUNT     3
-#define SNAKE_MAX_LEN        256
-#define SNAKE_MAX_NAME       16
-#define SNAKE_MAX_PER_ROOM   8
-#define SNAKE_INV_TICKS      80      /* 8s 无敌（服务端数值，客户端仅用于展示） */
+#define SNAKE_CELL_PX        20      /* 网格边长（像素） */
+#define SNAKE_COLS           40      /* 网格列数（宽 800px） */
+#define SNAKE_ROWS           24      /* 网格行数（高 480px） */
+#define SNAKE_SMALL_FOOD_MAX (SNAKE_COLS * SNAKE_ROWS)  /* 小食物铺满整张网格 = 960 */
+#define SNAKE_BIG_FOOD_MAX   8       /* 大食物最大数量 */
+#define SNAKE_SMALL_FOOD_SIZE 4      /* 小食物像素尺寸 4×4 */
+#define SNAKE_BIG_FOOD_SIZE  16      /* 大食物像素尺寸 16×16 */
+#define SNAKE_LEN_PER_SMALL  10      /* 每累计吃 10 个小食物长度 +1 */
+#define SNAKE_REFRESH_TICKS  100     /* 小食物刷新间隔（服务端用，10s） */
+#define SNAKE_BIGGEN_TICKS   50      /* 大食物生成间隔（服务端用，5s） */
+#define SNAKE_FOOD_MAX       (SNAKE_SMALL_FOOD_MAX + SNAKE_BIG_FOOD_MAX)
+#define SNAKE_MAX_LEN        256     /* 单条蛇最大身节数 */
+#define SNAKE_MAX_NAME       16      /* 昵称最大长度（不含 '\0'） */
+#define SNAKE_MAX_PER_ROOM   8       /* 单个房间最大玩家数 */
+#define SNAKE_INV_TICKS      80      /* 出生无敌持续时间（80 * TICK_MS = 8s） */
 
-/* ---------------- 行缓冲 ---------------- */
+/* ---------------- 服务器接收缓冲（帧式解析用） ---------------- */
 #define PROTO_LINE_MAX       2048
+
+/* ---------------- 二进制读写小工具（大端） ---------------- */
+static inline void pr_put_u8(uint8_t *p, uint8_t v)          { p[0] = v; }
+static inline uint8_t pr_get_u8(const uint8_t *p)            { return p[0]; }
+static inline void pr_put_u16(uint8_t *p, uint16_t v)
+{ p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)(v & 0xff); }
+static inline uint16_t pr_get_u16(const uint8_t *p)
+{ return (uint16_t)(((uint16_t)p[0] << 8) | p[1]); }
+static inline void pr_put_u32(uint8_t *p, uint32_t v)
+{ p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+static inline uint32_t pr_get_u32(const uint8_t *p)
+{ return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+static inline void pr_put_i32(uint8_t *p, int32_t v)         { pr_put_u32(p, (uint32_t)v); }
+static inline int32_t pr_get_i32(const uint8_t *p)           { return (int32_t)pr_get_u32(p); }
 
 #endif /* SNAKE_PROTOCOL_H */

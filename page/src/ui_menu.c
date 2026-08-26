@@ -121,7 +121,11 @@ void ui_name_set_status(lv_obj_t *s, const char *msg)
 /* ---------------- 主菜单屏状态 ---------------- */
 typedef struct {
     lv_obj_t *status;
+    lv_obj_t *btn_classic;      /* 经典地图按钮 */
+    lv_obj_t *btn_wrap;         /* 环形地图按钮 */
+    int       map_wrap;         /* 当前选中的地图：0=经典, 1=环形 */
     ui_mode_cb_t on_mode;
+    ui_map_cb_t  on_map;
 } main_state_t;
 static main_state_t s_main;
 
@@ -133,12 +137,33 @@ static void main_mode_pressed(lv_event_t *e)
     if (s_main.on_mode && mode) s_main.on_mode(mode);
 }
 
-/* 创建主菜单屏：标题 + 两个大按钮（单人模式 / 多人模式）+ 底部状态提示。
+/* 更新两个地图按钮的高亮样式：选中者用亮色，未选中者用暗色。 */
+static void map_style_update(void)
+{
+    lv_obj_t *sel = s_main.map_wrap ? s_main.btn_wrap : s_main.btn_classic;
+    lv_obj_t *unsel = s_main.map_wrap ? s_main.btn_classic : s_main.btn_wrap;
+    if (sel) lv_obj_set_style_bg_color(sel, lv_color_hex(0x2e8b57), 0);
+    if (unsel) lv_obj_set_style_bg_color(unsel, lv_color_hex(0x22394b), 0);
+}
+
+/* 地图选择按钮回调：切换选中项并把地图类型（0=经典, 1=环形）交给上层。 */
+static void map_select_pressed(lv_event_t *e)
+{
+    int wrap = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_main.map_wrap == wrap) return;
+    s_main.map_wrap = wrap;
+    map_style_update();
+    if (s_main.on_map) s_main.on_map(wrap);
+}
+
+/* 创建主菜单屏：标题 + 两个大按钮（单人模式 / 多人模式）+ 地图选择（经典/环形）+ 底部状态提示。
  * 返回值：主菜单屏对象。 */
-lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
+lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode, ui_map_cb_t on_map)
 {
     memset(&s_main, 0, sizeof(s_main));
     s_main.on_mode = on_mode;
+    s_main.on_map  = on_map;
+    s_main.map_wrap = 0;               /* 默认经典地图（撞墙死） */
 
     lv_obj_t *scr = lv_obj_create(parent ? parent : NULL);
     lv_obj_set_size(scr, LV_HOR_RES, LV_VER_RES);
@@ -174,6 +199,35 @@ lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode)
     lv_obj_set_style_text_align(l2, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(l2);
     lv_obj_add_event_cb(b2, main_mode_pressed, LV_EVENT_CLICKED, (void *)MODE_MULTI);
+
+    lv_obj_t *cap = lv_label_create(scr);                  /* 地图选择标题 */
+    lv_label_set_text(cap, "Map");
+    lv_obj_set_style_text_color(cap, lv_color_hex(0x9fb3c8), 0);
+    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, 0, -152);
+
+    lv_obj_t *mc = lv_btn_create(scr);                     /* 经典地图按钮：撞墙即死 */
+    lv_obj_set_size(mc, 120, 44);
+    lv_obj_align(mc, LV_ALIGN_BOTTOM_MID, 0, -110);
+    lv_obj_set_style_radius(mc, 8, 0);
+    lv_obj_set_style_bg_color(mc, lv_color_hex(0x2e8b57), 0);
+    lv_obj_t *mcl = lv_label_create(mc);
+    lv_label_set_text(mcl, "Classic");
+    lv_obj_center(mcl);
+    lv_obj_add_event_cb(mc, map_select_pressed, LV_EVENT_CLICKED, (void *)(intptr_t)0);
+
+    lv_obj_t *mw = lv_btn_create(scr);                     /* 环形地图按钮：穿墙 */
+    lv_obj_set_size(mw, 120, 44);
+    lv_obj_align(mw, LV_ALIGN_BOTTOM_MID, 130, -110);
+    lv_obj_set_style_radius(mw, 8, 0);
+    lv_obj_set_style_bg_color(mw, lv_color_hex(0x22394b), 0);
+    lv_obj_t *mwl = lv_label_create(mw);
+    lv_label_set_text(mwl, "Wrap");
+    lv_obj_center(mwl);
+    lv_obj_add_event_cb(mw, map_select_pressed, LV_EVENT_CLICKED, (void *)(intptr_t)1);
+
+    s_main.btn_classic = mc;
+    s_main.btn_wrap = mw;
+    map_style_update();
 
     lv_obj_t *st = lv_label_create(scr);                   /* 底部状态提示（如 Connected / 错误信息） */
     lv_label_set_text(st, " ");

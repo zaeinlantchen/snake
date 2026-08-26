@@ -1,10 +1,12 @@
 /*
  * snake.c
  *
- * 贪吃蛇客户端 —— “蛇结构”数据模型实现
+ * 贪吃蛇客户端 —— "蛇结构"数据模型实现
  *
- * 用 cJSON 解析服务端下发的 JSON STATE 帧，还原为 snake_world_t，
- * 供界面层（page/ui_game.c）直接使用其数据进行渲染。
+ * 解析服务端下发的二进制 STATE 帧（负载，不含帧头），
+ * 还原为 snake_world_t，供界面层（page/ui_game.c）直接使用其数据进行渲染。
+ *
+ * STATE 帧格式见 net/protocol.h。
  */
 
 #include <stdio.h>
@@ -12,14 +14,6 @@
 
 #include "snake.h"
 #include "../net/protocol.h"
-#include "../net/lib/cJSON.h"
-
-/* 从 JSON 对象取值（整数），缺省返回 def */
-static int get_value(cJSON *o, const char *key, int def)
-{
-    cJSON *it = cJSON_GetObjectItem(o, key);
-    return (cJSON_IsNumber(it)) ? it->valueint : def;
-}
 
 void snake_world_init(snake_world_t *w)
 {
@@ -41,6 +35,7 @@ void snake_world_reset_round(snake_world_t *w)
         w->snakes[i].alive = 0;
         w->snakes[i].score = 0;
         w->snakes[i].inv = 0;
+        w->snakes[i].small_eaten = 0;
     }
     w->nsnakes = 0;
     w->food_count = 0;
@@ -49,81 +44,74 @@ void snake_world_reset_round(snake_world_t *w)
     w->my_score = 0;
 }
 
-/* 解析一帧 JSON STATE：
- * {"type":"state","tick":..,"foods":[{"x":..,"y":..},...],
- *  "snakes":[{"id":..,"name":..,"color":..,"len":..,"score":..,"inv":..,
- *             "body":[{"x":..,"y":..},...]},...]} */
-int snake_parse_state(snake_world_t *w, const char *json)
+/* 解析一帧二进制 STATE 负载：
+ *   tick u32, small_n u16, small_n×{px u16,py u16}, big_n u8, big_n×{px u16,py u16},
+ *   nsnakes u8, nsnakes×{id u32,color u8,len u16,score u16,inv u8,small_eaten u8,
+ *                        name[16], body[len×{x u16,y u16}]}
+ * 所有整数均为大端序。 */
+int snake_parse_state(snake_world_t *w, const uint8_t *payload, int plen)
 {
-    cJSON *root, *foodsArr, *snakesArr, *it;
+    const uint8_t *p = payload;
+    int remain = plen;
     int i, cnt;
 
-    if (!w || !json) return -1;
-    root = cJSON_Parse(json);
-    if (!root) return -1;
+    if (!w || !payload || plen < 7) return -1;
 
-    it = cJSON_GetObjectItem(root, "type");
-    if (!it || !cJSON_IsString(it) || strcmp(it->valuestring, MSG_STATE) != 0) {
-        cJSON_Delete(root);
-        return -1;
+    /* tick */
+    w->tick = (int)pr_get_u32(p); p += 4; remain -= 4;
+
+    /* 小食物 */
+    cnt = pr_get_u16(p); p += 2; remain -= 2;
+    if (cnt > SNAKE_SMALL_FOOD_MAX) cnt = SNAKE_SMALL_FOOD_MAX;
+    w->food_count = 0;
+    for (i = 0; i < cnt; i++) {
+        if (remain < 4) return -1;
+        snake_food_t *f = &w->foods[w->food_count++];
+        f->x = pr_get_u16(p); p += 2; remain -= 2;
+        f->y = pr_get_u16(p); p += 2; remain -= 2;
+        f->kind = 0;
     }
 
-    w->tick = get_value(root, "tick", 0);
-
-    /* 食物 */
-    w->food_count = 0;
-    foodsArr = cJSON_GetObjectItem(root, "foods");
-    if (cJSON_IsArray(foodsArr)) {
-        cnt = 0;
-        cJSON_ArrayForEach(it, foodsArr) {
-            if (cnt >= SNAKE_FOOD_COUNT) break;
-            cJSON *jx = cJSON_GetObjectItem(it, "x");
-            cJSON *jy = cJSON_GetObjectItem(it, "y");
-            if (cJSON_IsNumber(jx) && cJSON_IsNumber(jy)) {
-                w->foods[cnt].x = jx->valueint;
-                w->foods[cnt].y = jy->valueint;
-                cnt++;
-            }
-        }
-        w->food_count = cnt;
+    /* 大食物 */
+    if (remain < 1) return -1;
+    cnt = pr_get_u8(p); p += 1; remain -= 1;
+    if (cnt > SNAKE_BIG_FOOD_MAX) cnt = SNAKE_BIG_FOOD_MAX;
+    for (i = 0; i < cnt; i++) {
+        if (remain < 4) return -1;
+        snake_food_t *f = &w->foods[w->food_count++];
+        f->x = pr_get_u16(p); p += 2; remain -= 2;
+        f->y = pr_get_u16(p); p += 2; remain -= 2;
+        f->kind = 1;
     }
 
     /* 蛇 */
-    w->nsnakes = 0;
-    snakesArr = cJSON_GetObjectItem(root, "snakes");
-    if (cJSON_IsArray(snakesArr)) {
-        cJSON_ArrayForEach(it, snakesArr) {
-            if (w->nsnakes >= SNAKE_MAX_PER_ROOM) break;
-            snake_player_t *s = &w->snakes[w->nsnakes];
-            s->id    = get_value(it, "id", -1);
-            s->color = get_value(it, "color", 0);
-            s->len   = get_value(it, "len", 0);
-            s->score = get_value(it, "score", 0);
-            s->inv   = get_value(it, "inv", 0);
-            cJSON *nm = cJSON_GetObjectItem(it, "name");
-            if (cJSON_IsString(nm)) { snprintf(s->name, sizeof(s->name), "%s", nm->valuestring); }
-            else s->name[0] = '\0';
-            if (s->len < 1) s->len = 1;
-            if (s->len > SNAKE_MAX_LEN) s->len = SNAKE_MAX_LEN;
+    if (remain < 1) return -1;
+    w->nsnakes = pr_get_u8(p); p += 1; remain -= 1;
+    if (w->nsnakes > SNAKE_MAX_PER_ROOM) w->nsnakes = SNAKE_MAX_PER_ROOM;
+    for (i = 0; i < w->nsnakes; i++) {
+        snake_player_t *s = &w->snakes[i];
+        int len, b;
+        if (remain < 4 + 1 + 2 + 2 + 1 + 1 + SNAKE_MAX_NAME) return -1;
+        s->id    = (int)pr_get_u32(p); p += 4; remain -= 4;
+        s->color = pr_get_u8(p); p += 1; remain -= 1;
+        len      = pr_get_u16(p); p += 2; remain -= 2;
+        s->score = pr_get_u16(p); p += 2; remain -= 2;
+        s->inv   = pr_get_u8(p); p += 1; remain -= 1;
+        s->small_eaten = pr_get_u8(p); p += 1; remain -= 1;
+        memcpy(s->name, p, SNAKE_MAX_NAME);
+        s->name[SNAKE_MAX_NAME] = '\0';
+        p += SNAKE_MAX_NAME; remain -= SNAKE_MAX_NAME;
 
-            cJSON *body = cJSON_GetObjectItem(it, "body");
-            int b = 0;
-            if (cJSON_IsArray(body)) {
-                cJSON *bm;
-                cJSON_ArrayForEach(bm, body) {
-                    if (b >= s->len) break;
-                    cJSON *bx = cJSON_GetObjectItem(bm, "x");
-                    cJSON *by = cJSON_GetObjectItem(bm, "y");
-                    if (cJSON_IsNumber(bx) && cJSON_IsNumber(by)) {
-                        s->body[b].x = bx->valueint;
-                        s->body[b].y = by->valueint;
-                        b++;
-                    }
-                }
-            }
-            s->alive = 1;
-            w->nsnakes++;
+        if (len < 1) len = 1;
+        if (len > SNAKE_MAX_LEN) len = SNAKE_MAX_LEN;
+        s->len = len;
+
+        for (b = 0; b < len; b++) {
+            if (remain < 4) return -1;
+            s->body[b].x = pr_get_u16(p); p += 2; remain -= 2;
+            s->body[b].y = pr_get_u16(p); p += 2; remain -= 2;
         }
+        s->alive = 1;
     }
 
     /* 更新本机得分 */
@@ -131,6 +119,5 @@ int snake_parse_state(snake_world_t *w, const char *json)
         if (w->snakes[i].id == w->my_id) { w->my_score = w->snakes[i].score; break; }
     }
 
-    cJSON_Delete(root);
     return 0;
 }

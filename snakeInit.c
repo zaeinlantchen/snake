@@ -6,11 +6,11 @@
  * 流程：用户名屏 -> 连接服务器(192.168.72.23) -> 主菜单(单人/多人) ->
  *       多人房间选择 -> 游戏屏(摇杆控制)。
  *
- * 负责：网络消息轮询、JSON 收发、屏幕切换、把摇杆/按钮操作转成 JSON 消息。
+ * 负责：网络消息轮询、二进制帧收发、屏幕切换、把摇杆/按钮操作转成二进制消息。
  *
  * 模块分工：
- *   net    —— TCP + 后台接收线程 + 消息队列
- *   snake  —— 蛇/世界的“数据结构 + JSON STATE 解析”
+ *   net    —— TCP + 后台接收线程 + 帧队列（纯二进制协议）
+ *   snake  —— 蛇/世界的"数据结构 + STATE 帧解析"
  *   page   —— 界面布局（用户名/主菜单/房间/游戏屏 + 摇杆）
  *   本文件 —— 协调上面三者。
  */
@@ -23,7 +23,6 @@
 
 #include "net/net.h"
 #include "net/protocol.h"
-#include "net/lib/cJSON.h"
 #include "snake/snake.h"
 #include "page/inc/ui_page.h"
 
@@ -42,62 +41,45 @@ static char s_name[SNAKE_MAX_NAME + 1] = "Player";
 static int  s_joined = 0;        /* 已发送 join */
 static int  s_connected = 0;     /* 连接成功（应在主界面） */
 static int  s_room = -1;         /* 当前房间号 */
+static int  s_wrap = 0;          /* 地图偏好：0=经典(撞墙死), 1=环形(穿墙) */
 
-/* 从 JSON 对象取值（整数），缺省返回 def */
-static int get_v(cJSON *o, const char *key, int def)
-{
-    cJSON *it = cJSON_GetObjectItem(o, key);
-    return (cJSON_IsNumber(it)) ? it->valueint : def;
-}
-
-/* ---------------- 发送 JSON ---------------- */
-static void send_json(cJSON *o)
-{
-    char *s = cJSON_PrintUnformatted(o);
-    if (s) { net_send(s); free(s); }
-    cJSON_Delete(o);
-}
-
-static void send_simple(const char *type)
-{
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "type", type);
-    send_json(o);
-}
-
+/* ---------------- 发送二进制帧 ---------------- */
 static void send_join(void)
 {
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "type", MSG_JOIN);
-    cJSON_AddStringToObject(o, "name", s_name);
-    send_json(o);
+    uint8_t buf[SNAKE_MAX_NAME];
+    memset(buf, 0, sizeof(buf));
+    strncpy((char *)buf, s_name, sizeof(buf));
+    net_send_msg(MSG_JOIN, buf, sizeof(buf));
 }
 
-static void send_mode(const char *m)
+static void send_mode(int single)
 {
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "type", MSG_MODE);
-    cJSON_AddStringToObject(o, "mode", m);
-    send_json(o);
+    uint8_t b[2];
+    b[0] = single ? 0 : 1;      /* 0=single, 1=multi */
+    b[1] = (uint8_t)s_wrap;     /* 0=经典, 1=环形 */
+    net_send_msg(MSG_MODE, b, sizeof(b));
 }
 
 static void send_dir(snake_dir_t d)
 {
-    cJSON *o = cJSON_CreateObject();
-    cJSON_AddStringToObject(o, "type", MSG_DIR);
-    const char *dir = DIR_STRING_RIGHT;
-    switch (d) {
-        case SNAKE_DIR_UP:         dir = DIR_STRING_UP;         break;
-        case SNAKE_DIR_DOWN:       dir = DIR_STRING_DOWN;       break;
-        case SNAKE_DIR_LEFT:       dir = DIR_STRING_LEFT;       break;
-        case SNAKE_DIR_RIGHT:      dir = DIR_STRING_RIGHT;      break;
-        case SNAKE_DIR_UP_LEFT:    dir = DIR_STRING_UP_LEFT;    break;
-        case SNAKE_DIR_UP_RIGHT:   dir = DIR_STRING_UP_RIGHT;   break;
-        case SNAKE_DIR_DOWN_LEFT:  dir = DIR_STRING_DOWN_LEFT;  break;
-        case SNAKE_DIR_DOWN_RIGHT: dir = DIR_STRING_DOWN_RIGHT; break;
-    }
-    cJSON_AddStringToObject(o, "dir", dir);
-    send_json(o);
+    uint8_t b = (uint8_t)d;
+    net_send_msg(MSG_DIR, &b, 1);
+}
+
+static void send_room_list(void)    { net_send_msg(MSG_ROOM_LIST, NULL, 0); }
+static void send_create_room(void)
+{
+    uint8_t b = (uint8_t)s_wrap;
+    net_send_msg(MSG_CREATE_ROOM, &b, 1);
+}
+static void send_random_join(void)  { net_send_msg(MSG_RANDOM_JOIN, NULL, 0); }
+static void send_leave(void)        { net_send_msg(MSG_LEAVE, NULL, 0); }
+
+static void send_join_room(int room_id)
+{
+    uint8_t b[4];
+    pr_put_u32(b, (uint32_t)room_id);
+    net_send_msg(MSG_JOIN_ROOM, b, sizeof(b));
 }
 
 /* ---------------- 回调：用户名 ---------------- */
@@ -120,12 +102,18 @@ static void on_mode(const char *mode)
 {
     if (!mode) return;
     if (strcmp(mode, MODE_SINGLE) == 0) {
-        send_mode(MODE_SINGLE);
+        send_mode(1);
     } else if (strcmp(mode, MODE_MULTI) == 0) {
-        send_mode(MODE_MULTI);
+        send_mode(0);
         lv_scr_load(s_room_scr);
         ui_room_set_status(s_room_scr, "Loading rooms...");
     }
+}
+
+/* ---------------- 回调：主菜单地图选择 ---------------- */
+static void on_map(int wrap)
+{
+    s_wrap = wrap ? 1 : 0;
 }
 
 /* ---------------- 回调：房间屏操作 ---------------- */
@@ -133,18 +121,13 @@ static void on_room(int action, int room_id)
 {
     switch (action) {
         case UI_ROOM_CREATE:
-            send_simple(MSG_CREATE_ROOM);
+            send_create_room();
             break;
         case UI_ROOM_JOIN:
-        {
-            cJSON *o = cJSON_CreateObject();
-            cJSON_AddStringToObject(o, "type", MSG_JOIN_ROOM);
-            cJSON_AddNumberToObject(o, "room", room_id);
-            send_json(o);
+            send_join_room(room_id);
             break;
-        }
         case UI_ROOM_RANDOM:
-            send_simple(MSG_RANDOM_JOIN);
+            send_random_join();
             break;
         case UI_ROOM_BACK:
             lv_scr_load(s_main_scr);
@@ -155,7 +138,7 @@ static void on_room(int action, int room_id)
 /* ---------------- 回调：游戏屏 ---------------- */
 static void on_quit(void)
 {
-    send_simple(MSG_LEAVE);
+    send_leave();
     s_room = -1;
     snake_world_reset_round(&s_world);
     if (s_game_scr) ui_game_clear_over(s_game_scr);
@@ -177,92 +160,103 @@ static void handle_disconnect(void)
     ui_name_set_status(s_name_scr, "Connection lost. Try again.");
 }
 
-/* ---------------- 消息分发 ---------------- */
-static void handle_message(char *line)
+/* ---------------- 消息分发（一帧二进制） ---------------- */
+static void handle_message(uint8_t type, const uint8_t *p, int plen)
 {
-    cJSON *o = cJSON_Parse(line);
-    if (!o) return;
-    cJSON *t = cJSON_GetObjectItem(o, "type");
-    if (!t || !cJSON_IsString(t)) { cJSON_Delete(o); return; }
-    const char *type = t->valuestring;
-
-    if (strcmp(type, MSG_WELCOME) == 0) {
-        s_world.my_id = get_v(o, "id", -1);
-        s_world.room = -1;
-        ui_game_set_my_id(s_world.my_id);
-        s_connected = 1;
-        lv_scr_load(s_main_scr);
-        ui_main_set_status(s_main_scr, "Connected");
-    }
-    else if (strcmp(type, MSG_ROOMS) == 0) {
-        cJSON *arr = cJSON_GetObjectItem(o, "rooms");
-        int ids[64], players[64], maxs[64];
-        int n = 0;
-        if (cJSON_IsArray(arr)) {
-            cJSON *it;
-            cJSON_ArrayForEach(it, arr) {
-                if (n >= 64) break;
-                ids[n]     = get_v(it, "id", 0);
-                players[n] = get_v(it, "players", 0);
-                maxs[n]    = get_v(it, "max", 8);
-                n++;
+    switch (type) {
+        case MSG_WELCOME: {
+            if (plen < 8) break;
+            s_world.my_id = (int)pr_get_u32(p);
+            s_world.room = -1;
+            ui_game_set_my_id(s_world.my_id);
+            s_connected = 1;
+            lv_scr_load(s_main_scr);
+            ui_main_set_status(s_main_scr, "Connected");
+            break;
+        }
+        case MSG_ROOMS: {
+            if (plen < 1) break;
+            int n = p[0], i;
+            int ids[64], players[64], maxs[64], wraps[64];
+            if (n > 64) n = 64;
+            for (i = 0; i < n; i++) {
+                if (1 + i * 7 + 7 > plen) break;
+                const uint8_t *e = p + 1 + i * 7;
+                ids[i]     = (int)pr_get_u32(e);
+                players[i] = e[4];
+                maxs[i]    = e[5];
+                wraps[i]   = e[6];
             }
+            ui_room_refresh(s_room_scr, ids, players, maxs, wraps, i);
+            ui_room_set_status(s_room_scr, i ? "Select a room" : "No rooms - Create or Random");
+            break;
         }
-        ui_room_refresh(s_room_scr, ids, players, maxs, n);
-        ui_room_set_status(s_room_scr, n ? "Select a room" : "No rooms - Create or Random");
-    }
-    else if (strcmp(type, MSG_ROOM) == 0) {
-        s_room = get_v(o, "room", -1);
-        s_world.room = s_room;
-        snake_world_reset_round(&s_world);
-        if (!s_game_scr) s_game_scr = ui_game_screen_create(NULL, on_quit, on_dir);
-        ui_game_set_my_id(s_world.my_id);
-        ui_game_clear_over(s_game_scr);
-        ui_game_update(s_game_scr, &s_world);
-        lv_scr_load(s_game_scr);
-    }
-    else if (strcmp(type, MSG_STATE) == 0) {
-        if (snake_parse_state(&s_world, line) == 0 && s_game_scr) {
+        case MSG_ROOM: {
+            if (plen < 6) break;
+            s_room = (int)pr_get_u32(p);
+            s_world.room = s_room;
+            s_world.wrap = p[5] ? 1 : 0;   /* 0=经典, 1=环形 */
+            snake_world_reset_round(&s_world);
+            if (!s_game_scr) s_game_scr = ui_game_screen_create(NULL, on_quit, on_dir);
+            ui_game_set_my_id(s_world.my_id);
+            ui_game_clear_over(s_game_scr);
             ui_game_update(s_game_scr, &s_world);
+            lv_scr_load(s_game_scr);
+            break;
         }
-    }
-    else if (strcmp(type, MSG_OVER) == 0) {
-        s_world.winner_id = get_v(o, "winner", -1);
-        s_world.game_over = 1;
-        if (s_game_scr) ui_game_set_over(s_game_scr, &s_world);
-    }
-    else if (strcmp(type, MSG_ROUND) == 0) {
-        s_world.game_over = 0;
-        snake_world_reset_round(&s_world);
-        if (s_game_scr) ui_game_clear_over(s_game_scr);
-    }
-    else if (strcmp(type, MSG_ERROR) == 0) {
-        cJSON *m = cJSON_GetObjectItem(o, "msg");
-        const char *msg = (m && cJSON_IsString(m)) ? m->valuestring : "Error";
-        if (s_room >= 0 && s_game_scr) {
-            /* 游戏里出错，忽略 */
-        } else if (lv_scr_act() == s_room_scr) {
-            ui_room_set_status(s_room_scr, msg);
-        } else if (lv_scr_act() == s_main_scr) {
-            ui_main_set_status(s_main_scr, msg);
-        } else {
-            ui_name_set_status(s_name_scr, msg);
+        case MSG_STATE: {
+            if (snake_parse_state(&s_world, p, plen) == 0 && s_game_scr) {
+                ui_game_update(s_game_scr, &s_world);
+            }
+            break;
         }
+        case MSG_OVER: {
+            if (plen < 4) break;
+            s_world.winner_id = (int)pr_get_i32(p);
+            s_world.game_over = 1;
+            if (s_game_scr) ui_game_set_over(s_game_scr, &s_world);
+            break;
+        }
+        case MSG_ROUND: {
+            s_world.game_over = 0;
+            snake_world_reset_round(&s_world);
+            if (s_game_scr) ui_game_clear_over(s_game_scr);
+            break;
+        }
+        case MSG_ERROR: {
+            char msg[128];
+            int n = plen < (int)sizeof(msg) - 1 ? plen : (int)sizeof(msg) - 1;
+            if (n > 0) { memcpy(msg, p, (size_t)n); msg[n] = '\0'; }
+            else { msg[0] = '\0'; }
+            if (s_room >= 0 && s_game_scr) {
+                /* 游戏里出错，忽略 */
+            } else if (lv_scr_act() == s_room_scr) {
+                ui_room_set_status(s_room_scr, msg);
+            } else if (lv_scr_act() == s_main_scr) {
+                ui_main_set_status(s_main_scr, msg);
+            } else {
+                ui_name_set_status(s_name_scr, msg);
+            }
+            break;
+        }
+        default:
+            break;
     }
-    cJSON_Delete(o);
 }
 
 /* ---------------- 周期轮询 ---------------- */
 static void poll_timer(lv_timer_t *timer)
 {
     (void)timer;
-    char line[16384];
+    uint8_t type;
+    uint8_t buf[16384];
+    int plen;
     int r;
 
-    while ((r = net_poll(line, sizeof(line))) != 0) {
+    while ((r = net_poll_msg(&type, buf, sizeof(buf), &plen)) != 0) {
         if (r < 0) { handle_disconnect(); break; }
-        if (strcmp(line, PROTO_NETCLOSED) == 0) { handle_disconnect(); break; }
-        handle_message(line);
+        if (type == MSG_NETCLOSED) { handle_disconnect(); break; }
+        handle_message(type, buf, plen);
     }
 
     /* 连接建立后立即发送 join（不能等 welcome，否则服务端不会回 welcome） */
@@ -279,7 +273,7 @@ void snakeInit(void)
     net_init();
 
     s_name_scr = ui_name_screen_create(NULL, on_name, "Player");
-    s_main_scr = ui_main_screen_create(NULL, on_mode);
+    s_main_scr = ui_main_screen_create(NULL, on_mode, on_map);
     s_room_scr = ui_room_screen_create(NULL, on_room);
     lv_scr_load(s_name_scr);
 

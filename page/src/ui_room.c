@@ -98,13 +98,13 @@ lv_obj_t *ui_room_screen_create(lv_obj_t *parent, ui_room_cb_t cb)
     lv_textarea_set_one_line(ta, 1);
     lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_size(ta, 120, 60);
-    lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, 62);
+    lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, 50);
     lv_obj_set_style_bg_color(ta, lv_color_hex(0x1c3346), 0);
     lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
 
     lv_obj_t *joinbtn = lv_btn_create(scr);                /* “Join”按钮：按输入的房间号加入 */
     lv_obj_set_size(joinbtn, 120, 40);
-    lv_obj_align(joinbtn, LV_ALIGN_TOP_MID, 140, 62);
+    lv_obj_align(joinbtn, LV_ALIGN_TOP_MID, 140, 60);
     lv_obj_set_style_bg_color(joinbtn, lv_color_hex(0x2e8b57), 0);
     lv_obj_t *jb = lv_label_create(joinbtn);
     lv_label_set_text(jb, "Join");
@@ -144,7 +144,7 @@ lv_obj_t *ui_room_screen_create(lv_obj_t *parent, ui_room_cb_t cb)
     lv_obj_t *st = lv_label_create(scr);                   /* 状态提示：房间列表加载 / 错误信息等 */
     lv_label_set_text(st, " ");
     lv_obj_set_style_text_color(st, lv_color_hex(0x7fc8ff), 0);
-    lv_obj_align(st, LV_ALIGN_BOTTOM_MID, 0, 120);
+    lv_obj_align(st, LV_ALIGN_BOTTOM_MID, 0, -60);
 
     /* 软键盘（房间号为数字；聚焦显示，失焦隐藏） */
     lv_obj_t *kb = lv_keyboard_create(scr);                /* 底部软键盘：默认隐藏，聚焦房间号输入框时弹出 */
@@ -164,8 +164,10 @@ lv_obj_t *ui_room_screen_create(lv_obj_t *parent, ui_room_cb_t cb)
 }
 
 /* 刷新房间列表：清空旧列表，按服务端返回的房间数组为每个房间
- * 生成一个可点击的按钮行（显示 “Room N (players/max)”），点击即加入。 */
-void ui_room_refresh(lv_obj_t *s, const int ids[], const int players[], const int maxs[], int n)
+ * 生成一个可点击的按钮行（显示 "Room N (players/max) [C|W]"，C=经典, W=环形），
+ * 点击即加入。 */
+void ui_room_refresh(lv_obj_t *s, const int ids[], const int players[],
+                     const int maxs[], const int wraps[], int n)
 {
     (void)s;
     if (!s_room.list) return;
@@ -173,6 +175,7 @@ void ui_room_refresh(lv_obj_t *s, const int ids[], const int players[], const in
 
     if (n <= 0) {
         lv_obj_t *l = lv_label_create(s_room.list);          /* 无房间时的占位提示 */
+        lv_label_set_text(l, "no rooms");
         lv_obj_set_style_text_color(l, lv_color_hex(0x9fb3c8), 0);
         return;
     }
@@ -183,7 +186,9 @@ void ui_room_refresh(lv_obj_t *s, const int ids[], const int players[], const in
         lv_obj_set_style_bg_color(row, lv_color_hex(0x22405a), 0);
         lv_obj_t *lab = lv_label_create(row);
         char buf[64];
-        snprintf(buf, sizeof(buf), "Room %d   (%d/%d)", ids[i], players[i], maxs[i]);
+        int w = (wraps && wraps[i]) ? 1 : 0;
+        snprintf(buf, sizeof(buf), "Room %d   (%d/%d) %s", ids[i], players[i], maxs[i],
+                 w ? "W" : "C");
         lv_label_set_text(lab, buf);
         lv_obj_center(lab);
         lv_obj_add_event_cb(row, room_row_pressed, LV_EVENT_CLICKED, (void *)(intptr_t)ids[i]);

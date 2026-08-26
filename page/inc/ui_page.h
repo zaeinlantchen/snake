@@ -18,10 +18,11 @@ extern "C" {
 #endif
 
 /* ---------------- 回调类型 ---------------- */
-typedef void (*ui_name_cb_t)(const char *name);         /* 用户名屏“开始” */
+typedef void (*ui_name_cb_t)(const char *name);         /* 用户名屏"开始" */
 typedef void (*ui_mode_cb_t)(const char *mode);         /* 主菜单：single / multi */
+typedef void (*ui_map_cb_t)(int wrap);                  /* 主菜单：地图选择 0=经典, 1=环形 */
 typedef void (*ui_room_cb_t)(int action, int room_id);  /* 房间屏操作 */
-typedef void (*ui_quit_cb_t)(void);                     /* 游戏屏“退出”回菜单 */
+typedef void (*ui_quit_cb_t)(void);                     /* 游戏屏"退出"回菜单 */
 typedef void (*ui_dir_cb_t)(snake_dir_t dir);           /* 摇杆方向 */
 
 /* 房间屏操作动作 */
@@ -35,13 +36,14 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
 void      ui_name_set_status(lv_obj_t *s, const char *msg);
 
 /* ---------------- 主菜单屏 ---------------- */
-lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode);
+lv_obj_t *ui_main_screen_create(lv_obj_t *parent, ui_mode_cb_t on_mode, ui_map_cb_t on_map);
 void      ui_main_set_status(lv_obj_t *s, const char *msg);
 
 /* ---------------- 多人房间屏 ---------------- */
 lv_obj_t *ui_room_screen_create(lv_obj_t *parent, ui_room_cb_t cb);
-/* 刷新房间列表；ids/players/maxs 长度均为 n */
-void      ui_room_refresh(lv_obj_t *s, const int ids[], const int players[], const int maxs[], int n);
+/* 刷新房间列表；ids/players/maxs/wraps 长度均为 n，wraps: 0=经典, 1=环形 */
+void      ui_room_refresh(lv_obj_t *s, const int ids[], const int players[],
+                          const int maxs[], const int wraps[], int n);
 void      ui_room_set_status(lv_obj_t *s, const char *msg);
 
 /* ---------------- 游戏屏 ---------------- */

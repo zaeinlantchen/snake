@@ -220,7 +220,8 @@ lv_color_t ui_palette_color(int index)
 }
 
 /* 绘制整个棋盘到 canvas，顺序为：
- * 背景底色 → 网格线 → 边框 → 食物（红色圆角方块）→ 所有蛇
+ * 背景底色 → 网格线 → 边框 → 食物（小食物 4×4px 红色、大食物 16×16px 金黄，
+ * 直接使用服务端下发的屏幕像素坐标）→ 所有蛇
  * （蛇头更亮且稍大；无敌中的蛇整体带白色描边）。 */
 static void draw_board(const snake_world_t *w)
 {
@@ -251,16 +252,34 @@ static void draw_board(const snake_world_t *w)
         lv_canvas_draw_rect(s_game.canvas, 1, 1, UI_CANVAS_W - 2, UI_CANVAS_H - 2, &fr);
     }
 
+    /* 小食物：4×4px，按像素坐标直接绘制 */
     {
         lv_draw_rect_dsc_t fd;
         lv_draw_rect_dsc_init(&fd);
         fd.bg_opa = LV_OPA_COVER;
         fd.bg_color = food;
-        fd.radius = 7;
+        fd.radius = 1;
         for (i = 0; i < w->food_count; i++) {
-            int px = w->foods[i].x * UI_CELL + 2;
-            int py = w->foods[i].y * UI_CELL + 2;
-            lv_canvas_draw_rect(s_game.canvas, px, py, UI_CELL - 4, UI_CELL - 4, &fd);
+            if (w->foods[i].kind != 0) continue;
+            lv_canvas_draw_rect(s_game.canvas, w->foods[i].x, w->foods[i].y,
+                                SNAKE_SMALL_FOOD_SIZE, SNAKE_SMALL_FOOD_SIZE, &fd);
+        }
+    }
+
+    /* 大食物：16×16px 金黄色圆角方块，按像素坐标直接绘制 */
+    {
+        lv_draw_rect_dsc_t bd;
+        lv_draw_rect_dsc_init(&bd);
+        bd.bg_opa = LV_OPA_COVER;
+        bd.bg_color = lv_color_hex(0xffd166);
+        bd.radius = 6;
+        bd.border_opa = LV_OPA_COVER;
+        bd.border_width = 2;
+        bd.border_color = lv_color_hex(0xfff3b0);
+        for (i = 0; i < w->food_count; i++) {
+            if (w->foods[i].kind != 1) continue;
+            lv_canvas_draw_rect(s_game.canvas, w->foods[i].x, w->foods[i].y,
+                                SNAKE_BIG_FOOD_SIZE, SNAKE_BIG_FOOD_SIZE, &bd);
         }
     }
 
@@ -299,7 +318,7 @@ void ui_game_update(lv_obj_t *s, const snake_world_t *w)
 
     const snake_player_t *me = NULL;
     int i, rank = 1;
-    char hud[160];
+    char hud[192];
     for (i = 0; i < w->nsnakes; i++)
         if (w->snakes[i].id == s_game.my_id) { me = &w->snakes[i]; break; }
     if (me) {
@@ -307,11 +326,15 @@ void ui_game_update(lv_obj_t *s, const snake_world_t *w)
         for (i = 0; i < w->nsnakes; i++)
             if (w->snakes[i].id != me->id && w->snakes[i].score > me->score) rank++;
         if (me->inv > 0) {
-            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d   Invincible: %ds",
-                     me->name, me->score, rank, w->nsnakes, me->inv);
+            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d   Food: %d/%d   Invincible: %ds   Map: %s",
+                     me->name, me->score, rank, w->nsnakes,
+                     me->small_eaten, SNAKE_LEN_PER_SMALL, me->inv,
+                     w->wrap ? "Wrap" : "Classic");
         } else {
-            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d",
-                     me->name, me->score, rank, w->nsnakes);
+            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d   Food: %d/%d   Map: %s",
+                     me->name, me->score, rank, w->nsnakes,
+                     me->small_eaten, SNAKE_LEN_PER_SMALL,
+                     w->wrap ? "Wrap" : "Classic");
         }
     } else {
         snprintf(hud, sizeof(hud), "Score: %d   Alive: %d", w->my_score, w->nsnakes);

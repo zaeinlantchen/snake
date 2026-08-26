@@ -5,14 +5,18 @@
  *
  * 网络模块在后台线程中维护一条到服务端的 TCP 连接：
  *   - net_connect() 建立连接并启动接收线程；
- *   - 接收线程不断地 recv 并把完整消息放入线程安全队列；
- *   - 主线程（LVGL 线程）通过 net_poll() 取出消息，通过 net_send() 发送命令。
+ *   - 接收线程不断地 recv 并把完整二进制帧放入线程安全队列；
+ *   - 主线程（LVGL 线程）通过 net_poll_msg() 取出帧，通过 net_send_msg() 发送命令。
+ *
+ * 帧格式见 net/protocol.h：1 字节类型 + 2 字节负载长度(大端) + 负载。
  *
  * 注意：不要再接收线程里调用任何 LVGL API —— 绘图只能在主线程进行。
  */
 
 #ifndef LUNAUI_NET_H
 #define LUNAUI_NET_H
+
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,20 +56,23 @@ int net_connect(const net_cfg_t *cfg);
 void net_close(void);
 
 /**
- * 发送一行消息（内部自动追加 '\n' 并发送）。
- * @param line 一行文本（不含 '\n'）
+ * 发送一帧二进制消息（自动附加帧头并发送）。
+ * @param type    消息类型（见 protocol.h 的 MSG_*）
+ * @param payload 负载数据，可为 NULL（plen 为 0）
+ * @param plen    负载字节数（≤ PROTO_MAX_PAYLOAD）
  * @return 0 成功，-1 失败
  */
-int net_send(const char *line);
+int net_send_msg(uint8_t type, const void *payload, uint16_t plen);
 
 /**
- * 从接收队列取出一条完整消息（不含 '\n'，以 '\0' 结尾）。
- * @param out    输出缓冲
- * @param outlen 输出缓冲大小
- * @return 1 取到一条；0 暂无消息；-1 连接已断开（此时 out 可能为
- *         PROTO_NETCLOSED 内容，应据此提示用户）
+ * 从接收队列取出一帧完整消息（不含帧头）。
+ * @param type    输出消息类型；连接断开时置为 MSG_NETCLOSED
+ * @param out     输出缓冲（负载数据，末尾补 '\0' 便于字符串负载使用）
+ * @param outlen  输出缓冲大小
+ * @param plen_out 输出负载实际长度（可为 NULL）
+ * @return 1 取到一帧；0 暂无消息；-1 连接已断开
  */
-int net_poll(char *out, int outlen);
+int net_poll_msg(uint8_t *type, uint8_t *out, int outlen, int *plen_out);
 
 /**
  * 查询当前连接状态。

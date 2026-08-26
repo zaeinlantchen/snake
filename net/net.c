@@ -1,11 +1,13 @@
 /*
  * net.c
  *
- * 贪吃蛇客户端 —— 网络模块实现
+ * 贪吃蛇客户端 —— 网络模块实现（纯二进制帧协议）
  *
  * - 后台线程负责建立连接（带超时）并持续 recv；
- * - 收到的完整行放入线程安全的消息队列；
- * - 主线程用 net_poll() 取消息、net_send() 发命令、net_state() 查状态。
+ * - 接收到的完整二进制帧放入线程安全的消息队列；
+ * - 主线程用 net_poll_msg() 取帧、net_send_msg() 发帧、net_state() 查状态。
+ *
+ * 帧格式：1 字节类型 + 2 字节负载长度（大端）+ 负载（见 protocol.h）。
  *
  * 平台：Linux（arm-linux-gcc 交叉编译，板子上为 Linux 3.4.39）
  */
@@ -31,13 +33,19 @@
 /* ----------------------------------------------------------------- */
 /* 内部常量                                                           */
 /* ----------------------------------------------------------------- */
-#define NET_QUEUE_DEPTH 32          /* 消息队列深度 */
-#define NET_LINE_MAX    16384       /* 接收行缓冲大小（STATE 帧可能较大） */
+#define NET_QUEUE_DEPTH 8           /* 消息队列深度（STATE 帧较大，不宜过多） */
+#define NET_ACC_MAX     (PROTO_HEADER_LEN + PROTO_MAX_PAYLOAD)   /* 接收累积缓冲 */
 #define NET_HOST_MAX    64
 
 /* ----------------------------------------------------------------- */
 /* 模块状态                                                           */
 /* ----------------------------------------------------------------- */
+typedef struct {
+    uint8_t  type;
+    uint16_t len;
+    uint8_t  data[PROTO_MAX_PAYLOAD];
+} net_msg_t;
+
 static volatile int      g_fd = -1;
 static volatile net_state_t g_state = NET_DISCONNECTED;
 static pthread_t         g_thread;
@@ -46,7 +54,7 @@ static volatile int      g_thread_running = 0;
 static pthread_mutex_t   g_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t   g_state_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static char g_q[NET_QUEUE_DEPTH][NET_LINE_MAX];
+static net_msg_t g_q[NET_QUEUE_DEPTH];
 static int  g_q_head = 0;
 static int  g_q_tail = 0;
 static int  g_q_count = 0;
@@ -76,30 +84,28 @@ static void set_error(const char *msg)
 /* ----------------------------------------------------------------- */
 /* 消息队列                                                           */
 /* ----------------------------------------------------------------- */
-static void queue_push(const char *line)
+static void queue_push(uint8_t type, const uint8_t *data, uint16_t len)
 {
     pthread_mutex_lock(&g_queue_lock);
     if (g_q_count >= NET_QUEUE_DEPTH) {
-        /* 满了：丢弃最旧的一条，腾出位置 */
+        /* 满了：丢弃最旧的一帧，腾出位置 */
         g_q_head = (g_q_head + 1) % NET_QUEUE_DEPTH;
         g_q_count--;
     }
-    strncpy(g_q[g_q_tail], line, NET_LINE_MAX - 1);
-    g_q[g_q_tail][NET_LINE_MAX - 1] = '\0';
+    g_q[g_q_tail].type = type;
+    g_q[g_q_tail].len = len;
+    if (len > 0 && data) memcpy(g_q[g_q_tail].data, data, len);
     g_q_tail = (g_q_tail + 1) % NET_QUEUE_DEPTH;
     g_q_count++;
     pthread_mutex_unlock(&g_queue_lock);
 }
 
-static int queue_pop(char *out, int outlen)
+static int queue_pop(net_msg_t *out)
 {
     int got = 0;
     pthread_mutex_lock(&g_queue_lock);
     if (g_q_count > 0) {
-        size_t n = strlen(g_q[g_q_head]);
-        if ((int)n >= outlen) n = (size_t)outlen - 1;
-        memcpy(out, g_q[g_q_head], n);
-        out[n] = '\0';
+        *out = g_q[g_q_head];
         g_q_head = (g_q_head + 1) % NET_QUEUE_DEPTH;
         g_q_count--;
         got = 1;
@@ -183,7 +189,7 @@ static void *recv_thread(void *arg)
     int fd = connect_timeout(g_host, g_port, g_timeout_ms);
     if (fd < 0) {
         set_state(NET_DISCONNECTED);
-        queue_push(PROTO_NETCLOSED);
+        queue_push(MSG_NETCLOSED, NULL, 0);
         g_thread_running = 0;
         return NULL;
     }
@@ -192,7 +198,7 @@ static void *recv_thread(void *arg)
     set_blocking(fd);           /* 确保接收在阻塞模式，避免 EAGAIN 误断 */
     set_state(NET_CONNECTED);
 
-    char acc[NET_LINE_MAX + 512];
+    uint8_t acc[NET_ACC_MAX];
     int  acclen = 0;
 
     while (1) {
@@ -204,32 +210,35 @@ static void *recv_thread(void *arg)
         }
         if (n == 0) break;      /* 对端关闭 */
 
-        if (acclen + n > (int)sizeof(acc) - 1) acclen = 0;   /* 溢出保护 */
+        if (acclen + n > (int)sizeof(acc)) acclen = 0;   /* 溢出保护 */
 
         memcpy(acc + acclen, buf, (size_t)n);
         acclen += (int)n;
-        acc[acclen] = '\0';
 
-        /* 切分完整行 */
-        int start = 0, k;
-        for (k = 0; k < acclen; k++) {
-            if (acc[k] == '\n') {
-                acc[k] = '\0';
-                queue_push(acc + start);
-                start = k + 1;
+        /* 切分完整二进制帧 */
+        int pos = 0;
+        while (acclen - pos >= PROTO_HEADER_LEN) {
+            uint8_t type = acc[pos];
+            uint16_t plen = (uint16_t)(((uint16_t)acc[pos + 1] << 8) | acc[pos + 2]);
+            if (PROTO_HEADER_LEN + plen > NET_ACC_MAX) {   /* 非法帧，丢弃缓冲 */
+                acclen = 0;
+                pos = 0;
+                break;
             }
+            if (acclen - pos < PROTO_HEADER_LEN + plen) break;
+            queue_push(type, acc + pos + PROTO_HEADER_LEN, plen);
+            pos += PROTO_HEADER_LEN + plen;
         }
-        if (start > 0) {
-            acclen -= start;
-            memmove(acc, acc + start, (size_t)acclen);
-            acc[acclen] = '\0';
+        if (pos > 0) {
+            acclen -= pos;
+            memmove(acc, acc + pos, (size_t)acclen);
         }
     }
 
     close(fd);
     g_fd = -1;
     set_state(NET_DISCONNECTED);
-    queue_push(PROTO_NETCLOSED);
+    queue_push(MSG_NETCLOSED, NULL, 0);
     g_thread_running = 0;
     return NULL;
 }
@@ -276,35 +285,56 @@ void net_close(void)
     set_state(NET_DISCONNECTED);
 }
 
-int net_send(const char *line)
+int net_send_msg(uint8_t type, const void *payload, uint16_t plen)
 {
     if (g_state != NET_CONNECTED || g_fd < 0) return -1;
-    size_t len = strlen(line);
-    char tmp[NET_LINE_MAX];
-    if (len >= sizeof(tmp)) len = sizeof(tmp) - 1;
-    memcpy(tmp, line, len);
-    tmp[len++] = '\n';
+    if (plen > PROTO_MAX_PAYLOAD) return -1;
+
+    uint8_t hdr[PROTO_HEADER_LEN];
+    hdr[0] = type;
+    hdr[1] = (uint8_t)(plen >> 8);
+    hdr[2] = (uint8_t)(plen & 0xff);
 
     ssize_t written = 0;
-    while ((size_t)written < len) {
-        ssize_t n = send(g_fd, tmp + written, len - (size_t)written, MSG_NOSIGNAL);
+    while ((size_t)written < sizeof(hdr)) {
+        ssize_t n = send(g_fd, hdr + written, sizeof(hdr) - (size_t)written, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
         }
         written += n;
     }
+    if (plen > 0 && payload) {
+        written = 0;
+        while ((size_t)written < plen) {
+            ssize_t n = send(g_fd, (const char *)payload + written, plen - (size_t)written, MSG_NOSIGNAL);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return -1;
+            }
+            written += n;
+        }
+    }
     return 0;
 }
 
-int net_poll(char *out, int outlen)
+int net_poll_msg(uint8_t *type, uint8_t *out, int outlen, int *plen_out)
 {
-    /* 先取出队列中的消息；若没有任何消息且已断开，返回 -1 */
-    int got = queue_pop(out, outlen);
-    if (got) return 1;
+    /* 先取出队列中的帧；若没有任何帧且已断开，返回 -1 */
+    net_msg_t m;
+    if (queue_pop(&m)) {
+        if (type) *type = m.type;
+        if (plen_out) *plen_out = m.len;
+        if (out && outlen > 0) {
+            int n = m.len;
+            if (n > outlen - 1) n = outlen - 1;
+            if (n > 0) memcpy(out, m.data, (size_t)n);
+            out[n] = '\0';
+        }
+        return 1;
+    }
     if (net_state() == NET_DISCONNECTED) {
-        strncpy(out, PROTO_NETCLOSED, (size_t)outlen - 1);
-        out[outlen - 1] = '\0';
+        if (type) *type = MSG_NETCLOSED;
         return -1;
     }
     return 0;
