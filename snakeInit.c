@@ -168,6 +168,8 @@ static void handle_message(uint8_t type, const uint8_t *p, int plen)
             if (plen < 8) break;
             s_world.my_id = (int)pr_get_u32(p);
             s_world.room = -1;
+            s_world.cols = pr_get_u16(p + 4);   /* 默认地图尺寸（服务器按环形下发），进房后以房间为准 */
+            s_world.rows = pr_get_u16(p + 6);
             ui_game_set_my_id(s_world.my_id);
             s_connected = 1;
             lv_scr_load(s_main_scr);
@@ -192,10 +194,12 @@ static void handle_message(uint8_t type, const uint8_t *p, int plen)
             break;
         }
         case MSG_ROOM: {
-            if (plen < 6) break;
+            if (plen < 10) break;
             s_room = (int)pr_get_u32(p);
             s_world.room = s_room;
-            s_world.wrap = p[5] ? 1 : 0;   /* 0=经典, 1=环形 */
+            s_world.wrap = p[5] ? 1 : 0;          /* 0=经典, 1=环形 */
+            s_world.cols = pr_get_u16(p + 6);     /* 该房间地图尺寸 */
+            s_world.rows = pr_get_u16(p + 8);
             snake_world_reset_round(&s_world);
             if (!s_game_scr) s_game_scr = ui_game_screen_create(NULL, on_quit, on_dir);
             ui_game_set_my_id(s_world.my_id);

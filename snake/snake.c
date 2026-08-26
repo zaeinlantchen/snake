@@ -23,6 +23,9 @@ void snake_world_init(snake_world_t *w)
     w->winner_id = -1;
     w->my_score = 0;
     w->room = -1;
+    w->wrap = 0;
+    w->cols = SNAKE_CLASSIC_COLS;   /* 默认经典地图尺寸，进入房间后按 MSG_ROOM 更新 */
+    w->rows = SNAKE_CLASSIC_ROWS;
 }
 
 void snake_world_reset_round(snake_world_t *w)

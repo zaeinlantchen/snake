@@ -32,8 +32,9 @@
  *  服务端 -> 客户端
  *    MSG_WELCOME(20)   负载: id u32, cols u16, rows u16
  *    MSG_ROOMS(21)     负载: n u8，随后 n 个 { id u32, players u8, max u8, wrap u8 }
- *    MSG_ROOM(22)      负载: room u32, mode u8, wrap u8
+ *    MSG_ROOM(22)      负载: room u32, mode u8, wrap u8, cols u16, rows u16
  *                       wrap: 0=经典(撞墙死), 1=环形(穿墙)
+ *                       cols/rows: 该房间地图的网格尺寸（客户端按此做相机渲染）
  *    MSG_STATE(23)     负载: 见下方 "STATE 帧格式"
  *    MSG_OVER(24)      负载: winner i32（-1 平局/无人存活）
  *    MSG_ROUND(25)     无负载                        新一局开始
@@ -60,6 +61,8 @@
  *     不再做网格换算。
  *   - 地图类型由房间决定（wrap）：经典地图撞墙即死且不铺小食物；环形地图越界从对侧
  *     出现且撞自身不判死。服务端权威计算，客户端只渲染。
+ *   - 环形地图远大于屏幕：客户端用"蛇头居中、地图滚动"的相机方式渲染（视口裁剪），
+ *     因此 MSG_ROOM 携带该房间的地图尺寸。
  * ------------------------------------------------------------------
  */
 
@@ -102,9 +105,11 @@
 /* ---------------- 地图 / 游戏常量 ---------------- */
 #define SERVER_PORT          5000
 #define SNAKE_CELL_PX        20      /* 网格边长（像素） */
-#define SNAKE_COLS           40      /* 网格列数（宽 800px） */
-#define SNAKE_ROWS           24      /* 网格行数（高 480px） */
-#define SNAKE_SMALL_FOOD_MAX (SNAKE_COLS * SNAKE_ROWS)  /* 小食物铺满整张网格 = 960 */
+#define SNAKE_COLS           80      /* 环形地图网格列数（宽 1600px，客户端按视口渲染） */
+#define SNAKE_ROWS           48      /* 环形地图网格行数（高 960px） */
+#define SNAKE_CLASSIC_COLS   40      /* 经典地图网格列数（宽 800px，整屏显示） */
+#define SNAKE_CLASSIC_ROWS   24      /* 经典地图网格行数（高 480px） */
+#define SNAKE_SMALL_FOOD_MAX 960     /* 小食物目标数量（环形地图随机稀疏分布，非铺满） */
 #define SNAKE_BIG_FOOD_MAX   8       /* 大食物最大数量 */
 #define SNAKE_SMALL_FOOD_SIZE 4      /* 小食物像素尺寸 4×4 */
 #define SNAKE_BIG_FOOD_SIZE  16      /* 大食物像素尺寸 16×16 */

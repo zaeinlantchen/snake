@@ -70,6 +70,7 @@ typedef struct {
     int              game_over;    /* 1 = 刚收到本局结束 */
     int              room;         /* 房间号 */
     int              wrap;         /* 地图类型：0=经典(撞墙死), 1=环形(穿墙) */
+    int              cols, rows;   /* 本房间地图网格尺寸（环形地图远大于屏幕，客户端相机渲染） */
 } snake_world_t;
 
 void snake_world_init(snake_world_t *w);

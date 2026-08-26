@@ -3,7 +3,10 @@
  *
  * 游戏屏：顶部得分 + 菜单栏（退出回主菜单）+ 左侧虚拟摇杆 + Canvas 棋盘。
  *
- * 渲染：整张棋盘画进一张 lv_canvas，每次状态帧刷新。
+ * 渲染：画布固定为 800×480 视口，每次状态帧刷新。
+ *   - 经典地图：地图即屏幕（40×24），相机固定在原点；
+ *   - 环形地图：地图远大于屏幕（80×48），相机跟随本机蛇头——蛇头固定在屏幕中心、
+ *     地图滚动，只绘制视口内的实体（环形地图经"最近映像"可出现在屏幕两侧）。
  * 摇杆：拖动虚拟摇杆，把方向通过 on_dir 交给上层；松开时保持上次方向。
  * 无敌：无敌中的蛇带白色“护盾”描边；顶部显示本机剩馀无敌秒数。
  */
@@ -16,8 +19,8 @@
 #include "../inc/ui_page.h"
 
 #define UI_CELL        20
-#define UI_CANVAS_W    (SNAKE_COLS * UI_CELL)   /* 800 */
-#define UI_CANVAS_H    (SNAKE_ROWS * UI_CELL)   /* 480 */
+#define UI_CANVAS_W    800     /* 视口宽（固定，与地图大小无关） */
+#define UI_CANVAS_H    480     /* 视口高 */
 
 #define JOY_MAX_RADIUS  100     /* 摇杆头相对底座中心的最大偏移半径（px） */
 
@@ -107,9 +110,10 @@ static void joystick_pressing(lv_event_t *e)
 /* “Exit” 按钮回调：通知上层退出当前房间并返回主菜单。 */
 static void quit_pressed(lv_event_t *e) { (void)e; if (s_game.on_quit) s_game.on_quit(); }
 
-/* 创建游戏屏（800×480，整屏即棋盘）：
+/* 创建游戏屏（800×480，视口即棋盘）：
  *   ① 顶部菜单栏（hud 标签 + Exit 按钮）：显示本机昵称/得分/名次/无敌秒数，以及退出按钮；
- *   ② 整屏棋盘（canvas）：800×480 的 LVGL 画布，绘制 40×24 网格、食物与所有蛇；
+ *   ② 整屏棋盘（canvas）：800×480 的 LVGL 画布，经典地图绘制整张 40×24 地图，
+ *      环形地图用"蛇头居中、地图滚动"的相机方式绘制 80×48 大地图的视口；
  *   ③ 左下虚拟摇杆（base 底座 + knob 摇杆头）：透明底座叠在棋盘上，拖动控制 8 方向移动。
  * 屏幕中央另有一个默认隐藏的“本局结束”遮罩（over）。
  * 返回值：游戏屏对象（由上层用 lv_scr_load() 切换到该屏）。 */
@@ -146,7 +150,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_center(bl);
     lv_obj_add_event_cb(back, quit_pressed, LV_EVENT_CLICKED, NULL);
 
-    s_game.canvas = lv_canvas_create(scr);                   /* 整屏棋盘画布：40×24 网格，像素 800×480，绘制食物与所有蛇 */
+    s_game.canvas = lv_canvas_create(scr);                   /* 整屏棋盘画布：800×480 视口，绘制食物与所有蛇 */
     lv_canvas_set_buffer(s_game.canvas, s_canvas_buf, UI_CANVAS_W, UI_CANVAS_H, LV_IMG_CF_TRUE_COLOR);
     lv_obj_set_pos(s_game.canvas, 0, 0);
 
@@ -220,28 +224,64 @@ lv_color_t ui_palette_color(int index)
     }
 }
 
-/* 绘制整个棋盘到 canvas，顺序为：
- * 背景底色 → 网格线 → 边框 → 食物（小食物 4×4px 红色、大食物 16×16px 金黄，
- * 直接使用服务端下发的屏幕像素坐标）→ 所有蛇
- * （蛇头更亮且稍大；无敌中的蛇整体带白色描边）。 */
+/* 环形(相机)渲染辅助：把"世界坐标相对相机"的偏移折算到最近映像（环形地图）。
+ * d 为偏移，m 为地图像素边长；返回 [-m/2, m/2) 内的最近映像偏移。 */
+static int wrap_off(int d, int m)
+{
+    d = d % m;
+    if (d > m / 2) d -= m;
+    else if (d < -m / 2) d += m;
+    return d;
+}
+
+/* 绘制棋盘到 800×480 视口 canvas，顺序为：
+ * 背景底色 → 网格线（随相机偏移滚动）→ 边框 → 食物（小食物 4×4px 红色、
+ * 大食物 16×16px 金黄，直接使用服务端下发的屏幕像素坐标）→ 所有蛇
+ * （蛇头更亮且稍大；无敌中的蛇整体带白色描边）。
+ *
+ * 经典地图相机固定在原点（地图即屏幕）；环形地图相机跟随本机蛇头（蛇头居中，
+ * 地图滚动），实体按"最近映像"折算后仅绘制视口内部分。 */
 static void draw_board(const snake_world_t *w)
 {
     lv_color_t bg    = lv_color_hex(0x0d1b26);
     lv_color_t grid  = lv_color_hex(0x1c3346);
     lv_color_t frame = lv_color_hex(0x2e6b8f);
     lv_color_t food  = lv_color_hex(0xff5252);
+    static int cam_x = 0, cam_y = 0;    /* 相机：屏幕左上角对应的世界像素坐标 */
+    const int wrap = w->wrap;
+    const int mapw = w->cols * UI_CELL;
+    const int maph = w->rows * UI_CELL;
+    const int hcx = UI_CANVAS_W / 2, hcy = UI_CANVAS_H / 2;   /* 蛇头屏幕位置（居中） */
     int x, y, i, j;
+
+    if (wrap) {
+        /* 环形地图：相机对准本机蛇头，蛇头始终显示在屏幕中心 */
+        const snake_player_t *me = NULL;
+        for (i = 0; i < w->nsnakes; i++)
+            if (w->snakes[i].id == s_game.my_id) { me = &w->snakes[i]; break; }
+        if (me && me->len > 0) {
+            cam_x = me->body[0].x * UI_CELL + UI_CELL / 2 - hcx;
+            cam_y = me->body[0].y * UI_CELL + UI_CELL / 2 - hcy;
+        }
+    } else {
+        cam_x = 0; cam_y = 0;           /* 经典地图：整张地图即屏幕 */
+    }
 
     lv_canvas_fill_bg(s_game.canvas, bg, LV_OPA_COVER);
 
-    lv_draw_rect_dsc_t dr;
-    lv_draw_rect_dsc_init(&dr);
-    dr.bg_opa = LV_OPA_COVER;
-    dr.bg_color = grid;
-    for (x = 0; x < UI_CANVAS_W; x += UI_CELL)
-        lv_canvas_draw_rect(s_game.canvas, x, 0, 1, UI_CANVAS_H, &dr);
-    for (y = 0; y < UI_CANVAS_H; y += UI_CELL)
-        lv_canvas_draw_rect(s_game.canvas, 0, y, UI_CANVAS_W, 1, &dr);
+    /* 网格线：随相机偏移滚动，保持与地图格子对齐（相机 0 时即固定网格） */
+    {
+        lv_draw_rect_dsc_t dr;
+        lv_draw_rect_dsc_init(&dr);
+        dr.bg_opa = LV_OPA_COVER;
+        dr.bg_color = grid;
+        int gx = (UI_CELL - cam_x % UI_CELL) % UI_CELL;
+        int gy = (UI_CELL - cam_y % UI_CELL) % UI_CELL;
+        for (x = gx; x < UI_CANVAS_W; x += UI_CELL)
+            lv_canvas_draw_rect(s_game.canvas, x, 0, 1, UI_CANVAS_H, &dr);
+        for (y = gy; y < UI_CANVAS_H; y += UI_CELL)
+            lv_canvas_draw_rect(s_game.canvas, 0, y, UI_CANVAS_W, 1, &dr);
+    }
 
     {
         lv_draw_rect_dsc_t fr;
@@ -253,7 +293,7 @@ static void draw_board(const snake_world_t *w)
         lv_canvas_draw_rect(s_game.canvas, 1, 1, UI_CANVAS_W - 2, UI_CANVAS_H - 2, &fr);
     }
 
-    /* 小食物：4×4px，按像素坐标直接绘制 */
+    /* 小食物：4×4px，世界像素 -> 屏幕，视口外裁剪 */
     {
         lv_draw_rect_dsc_t fd;
         lv_draw_rect_dsc_init(&fd);
@@ -262,12 +302,15 @@ static void draw_board(const snake_world_t *w)
         fd.radius = 1;
         for (i = 0; i < w->food_count; i++) {
             if (w->foods[i].kind != 0) continue;
-            lv_canvas_draw_rect(s_game.canvas, w->foods[i].x, w->foods[i].y,
-                                SNAKE_SMALL_FOOD_SIZE, SNAKE_SMALL_FOOD_SIZE, &fd);
+            int sx = w->foods[i].x - cam_x;
+            int sy = w->foods[i].y - cam_y;
+            if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
+            if (sx < 0 || sx >= UI_CANVAS_W || sy < 0 || sy >= UI_CANVAS_H) continue;
+            lv_canvas_draw_rect(s_game.canvas, sx, sy, SNAKE_SMALL_FOOD_SIZE, SNAKE_SMALL_FOOD_SIZE, &fd);
         }
     }
 
-    /* 大食物：16×16px 金黄色圆角方块，按像素坐标直接绘制 */
+    /* 大食物：16×16px 金黄色圆角方块，世界像素 -> 屏幕，视口外裁剪 */
     {
         lv_draw_rect_dsc_t bd;
         lv_draw_rect_dsc_init(&bd);
@@ -279,8 +322,11 @@ static void draw_board(const snake_world_t *w)
         bd.border_color = lv_color_hex(0xfff3b0);
         for (i = 0; i < w->food_count; i++) {
             if (w->foods[i].kind != 1) continue;
-            lv_canvas_draw_rect(s_game.canvas, w->foods[i].x, w->foods[i].y,
-                                SNAKE_BIG_FOOD_SIZE, SNAKE_BIG_FOOD_SIZE, &bd);
+            int sx = w->foods[i].x - cam_x;
+            int sy = w->foods[i].y - cam_y;
+            if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
+            if (sx < 0 || sx >= UI_CANVAS_W || sy < 0 || sy >= UI_CANVAS_H) continue;
+            lv_canvas_draw_rect(s_game.canvas, sx, sy, SNAKE_BIG_FOOD_SIZE, SNAKE_BIG_FOOD_SIZE, &bd);
         }
     }
 
@@ -298,11 +344,17 @@ static void draw_board(const snake_world_t *w)
         }
         for (j = 0; j < s->len; j++) {
             int cx = s->body[j].x, cy = s->body[j].y;
-            if (cx < 0 || cx >= SNAKE_COLS || cy < 0 || cy >= SNAKE_ROWS) continue;
-            int px = cx * UI_CELL, py = cy * UI_CELL;
+            if (cx < 0 || cx >= w->cols || cy < 0 || cy >= w->rows) continue;
+            int sx = cx * UI_CELL + UI_CELL / 2 - cam_x;   /* 世界像素中心 -> 屏幕 */
+            int sy = cy * UI_CELL + UI_CELL / 2 - cam_y;
+            if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
+            if (sx < -UI_CELL || sx > UI_CANVAS_W + UI_CELL ||
+                sy < -UI_CELL || sy > UI_CANVAS_H + UI_CELL) continue;
+            int px = sx - UI_CELL / 2 + 1;
+            int py = sy - UI_CELL / 2 + 1;
             if (j == 0) { sd.bg_color = lv_color_mix(base, lv_color_white(), 96); sd.radius = 6; }
             else        { sd.bg_color = base; sd.radius = 4; }
-            lv_canvas_draw_rect(s_game.canvas, px + 1, py + 1, UI_CELL, UI_CELL, &sd);
+            lv_canvas_draw_rect(s_game.canvas, px, py, UI_CELL, UI_CELL, &sd);
         }
     }
     lv_obj_invalidate(s_game.canvas);
