@@ -17,6 +17,9 @@
 #include <math.h>
 
 #include "../inc/ui_page.h"
+#include "../../font.h"          /* 中文字体（FreeType） */
+
+LV_IMG_DECLARE(back);           /* LunaUI/img/back.c（200×200 黑色图标） */
 
 #define UI_CELL        20
 #define UI_CANVAS_W    800     /* 视口宽（固定，与地图大小无关） */
@@ -39,6 +42,15 @@ typedef struct {
 static game_state_t s_game;
 
 static lv_color_t s_canvas_buf[UI_CANVAS_W * UI_CANVAS_H];
+
+/* ---------------- 插值渲染状态（方案B：10Hz 状态 + ~30fps 渲染） ---------------- */
+static snake_world_t s_w_cur;    /* 最新一帧状态快照 */
+static snake_world_t s_w_prev;   /* 上一帧状态快照（用于两帧间插值） */
+static uint32_t      s_state_tick = 0;   /* 收到最新状态的时刻（lv_tick，ms） */
+static int           s_has_state = 0;    /* 是否收到过状态 */
+static int           s_has_prev  = 0;    /* 上一帧快照是否有效 */
+
+static void interp_timer_cb(lv_timer_t *t);   /* 前置声明（定义在 draw_board 之后） */
 
 /* ---------------- 摇杆 ---------------- */
 
@@ -133,22 +145,24 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     s_game.hud = lv_label_create(scr);                       /* 顶部菜单栏：本机昵称、得分、名次、无敌剩余秒数 */
     lv_obj_set_size(s_game.hud, 800, 100);
     lv_obj_set_pos(s_game.hud, 0, 0);
-    lv_label_set_text(s_game.hud, "Score: 0");
-    lv_obj_set_style_text_font(s_game.hud, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(s_game.hud, lv_color_hex(0x7fc8ff), 0);
+    lv_label_set_text(s_game.hud, "得分: 0");
+    lv_obj_set_style_text_font(s_game.hud, luna_font_normal(), 0);   /* 24px 中文字体 */
+    lv_obj_set_style_text_color(s_game.hud, lv_color_hex(0x22364a), 0);   /* 深色文字，适配米白色地图 */
     lv_obj_set_style_pad_left(s_game.hud, 14, 0);
     lv_obj_set_style_pad_top(s_game.hud, 8, 0);
     lv_obj_clear_flag(s_game.hud, LV_OBJ_FLAG_CLICKABLE); // 只显示文字，不拦截触摸事件
 
-    lv_obj_t *back = lv_btn_create(scr);                     /* 退出按钮：点击后离开房间并返回主菜单 */
-    lv_obj_set_size(back, 110, 34);
-    lv_obj_set_pos(back, 676, 44);
-    lv_obj_set_style_radius(back, 8, 0);
-    lv_obj_set_style_bg_color(back, lv_color_hex(0x5a3a3a), 0);
-    lv_obj_t *bl = lv_label_create(back);
-    lv_label_set_text(bl, "Exit");
-    lv_obj_center(bl);
-    lv_obj_add_event_cb(back, quit_pressed, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *exit_btn = lv_btn_create(scr);             /* 退出按钮：右上角 back 图标 */
+    lv_obj_set_size(exit_btn, 44, 44);
+    lv_obj_set_pos(exit_btn, 740, 20);
+    lv_obj_set_style_radius(exit_btn, 22, 0);
+    lv_obj_set_style_bg_color(exit_btn, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_pad_all(exit_btn, 0, 0);
+    lv_obj_set_style_opa(exit_btn, 150, 0);
+    lv_obj_t *back_img = lv_img_create(exit_btn);
+    lv_img_set_src(back_img, &back);                     /* 44×44 原生尺寸 */
+    lv_obj_center(back_img);
+    lv_obj_add_event_cb(exit_btn, quit_pressed, LV_EVENT_CLICKED, NULL);
 
     s_game.canvas = lv_canvas_create(scr);                   /* 整屏棋盘画布：800×480 视口，绘制食物与所有蛇 */
     lv_canvas_set_buffer(s_game.canvas, s_canvas_buf, UI_CANVAS_W, UI_CANVAS_H, LV_IMG_CF_TRUE_COLOR);
@@ -191,19 +205,21 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_clear_flag(over, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(over, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *ol = lv_label_create(over);                    /* 遮罩内文字：显示胜者昵称或 Game Over 及本机得分 */
-    lv_label_set_text(ol, "Game Over");
+    lv_label_set_text(ol, "游戏结束");
     lv_obj_center(ol);
-    lv_obj_set_style_text_font(ol, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(ol, luna_font_normal(), 0);   /* 24px 中文字体 */
     lv_obj_set_style_text_color(ol, lv_color_hex(0xffffff), 0);
 
     /* 菜单栏与退出按钮调到最顶层：必须在棋盘/摇杆/遮罩创建之后再调用才生效 */
     lv_obj_move_foreground(s_game.hud);
-    lv_obj_move_foreground(back);
+    lv_obj_move_foreground(exit_btn);
 
     s_game.over = over;
     s_game.over_label = ol;
     s_game.joy_base = base;
     s_game.joy_knob = knob;
+
+    lv_timer_create(interp_timer_cb, 33, NULL);    /* 插值渲染定时器：约 30fps */
     return scr;
 }
 
@@ -218,7 +234,7 @@ lv_color_t ui_palette_color(int index)
         case 3: return lv_color_hex(0x74f28c);
         case 4: return lv_color_hex(0xff8a5c);
         case 5: return lv_color_hex(0xc58cff);
-        case 6: return lv_color_hex(0xf2f2f2);
+        case 6: return lv_color_hex(0x9a9a9a);   /* 深灰，米白色地图上可见 */
         case 7: return lv_color_hex(0xff7ab8);
         default: return lv_color_hex(0xffffff);
     }
@@ -234,18 +250,45 @@ static int wrap_off(int d, int m)
     return d;
 }
 
+/* 插值辅助：计算某条蛇第 j 节在插值系数 k∈[0,1] 时的连续格坐标（float）。
+ * 环形地图下相邻两帧的同节坐标差取"最近映像"，跨边界时走最短路径。 */
+static void interp_cell(const snake_player_t *pv, const snake_player_t *cur, int j,
+                        float *fx, float *fy, int wrap, int cols, int rows, float k)
+{
+    /* 上一帧该节缺失（蛇在生长/重生）时，退化为上一帧蛇尾或本帧位置 */
+    int pl = (pv && pv->len > 0) ? pv->len : 0;
+    int pi = (pl > 0 && j < pl) ? j : (pl > 0 ? pl - 1 : 0);
+    int px = (pl > 0) ? pv->body[pi].x : cur->body[j].x;
+    int py = (pl > 0) ? pv->body[pi].y : cur->body[j].y;
+    int cx = cur->body[j].x, cy = cur->body[j].y;
+    float dx = (float)(cx - px);
+    float dy = (float)(cy - py);
+    if (wrap) { dx = (float)wrap_off((int)dx, cols); dy = (float)wrap_off((int)dy, rows); }
+    *fx = px + dx * k;
+    *fy = py + dy * k;
+}
+
 /* 绘制棋盘到 800×480 视口 canvas，顺序为：
  * 背景底色 → 网格线（随相机偏移滚动）→ 边框 → 食物（小食物 4×4px 红色、
  * 大食物 16×16px 金黄，直接使用服务端下发的屏幕像素坐标）→ 所有蛇
  * （蛇头更亮且稍大；无敌中的蛇整体带白色描边）。
  *
- * 经典地图相机固定在原点（地图即屏幕）；环形地图相机跟随本机蛇头（蛇头居中，
- * 地图滚动），实体按"最近映像"折算后仅绘制视口内部分。 */
-static void draw_board(const snake_world_t *w)
+ * 采用插值渲染：距最新状态 100ms 内，蛇的每一节在"上一帧 → 本帧"之间
+ * 按最近映像线性插值，画面以 ~30fps 平滑滑动（服务器仍是 10Hz）。
+ *
+ * 经典地图相机固定在原点（地图即屏幕）；环形地图相机跟随"插值后"的本机
+ * 蛇头（蛇头居中平滑移动、地图滚动），实体按"最近映像"折算后仅绘制视口内部分。 */
+static void draw_board(void)
 {
-    lv_color_t bg    = lv_color_hex(0x0d1b26);
-    lv_color_t grid  = lv_color_hex(0x1c3346);
-    lv_color_t frame = lv_color_hex(0x2e6b8f);
+    const snake_world_t *w  = &s_w_cur;                     /* 最新状态 */
+    const snake_world_t *pv = (s_has_state && s_has_prev) ? &s_w_prev : NULL;
+    uint32_t dt = lv_tick_get() - s_state_tick;             /* 距最新状态的时间 */
+    float k = (dt >= 100) ? 1.0f : (float)dt / 100.0f;      /* 插值系数（10Hz=100ms/帧） */
+    const int do_interp = (pv && k > 0.0f && k < 1.0f);
+
+    lv_color_t bg    = lv_color_hex(0xf7f3e8);   /* 米白色地图底色 */
+    lv_color_t grid  = lv_color_hex(0xe9e1cc);   /* 浅米色网格线 */
+    lv_color_t frame = lv_color_hex(0xc9bb90);   /* 深米色边框 */
     lv_color_t food  = lv_color_hex(0xff5252);
     static int cam_x = 0, cam_y = 0;    /* 相机：屏幕左上角对应的世界像素坐标 */
     const int wrap = w->wrap;
@@ -255,13 +298,20 @@ static void draw_board(const snake_world_t *w)
     int x, y, i, j;
 
     if (wrap) {
-        /* 环形地图：相机对准本机蛇头，蛇头始终显示在屏幕中心 */
-        const snake_player_t *me = NULL;
+        /* 环形地图：相机对准"插值后"的本机蛇头，蛇头始终平滑地显示在屏幕中心 */
+        const snake_player_t *me = NULL, *me_pv = NULL;
         for (i = 0; i < w->nsnakes; i++)
             if (w->snakes[i].id == s_game.my_id) { me = &w->snakes[i]; break; }
         if (me && me->len > 0) {
-            cam_x = me->body[0].x * UI_CELL + UI_CELL / 2 - hcx;
-            cam_y = me->body[0].y * UI_CELL + UI_CELL / 2 - hcy;
+            if (do_interp) {
+                for (i = 0; i < pv->nsnakes; i++)
+                    if (pv->snakes[i].id == me->id && pv->snakes[i].len > 0) { me_pv = &pv->snakes[i]; break; }
+            }
+            float hx, hy;
+            if (me_pv) interp_cell(me_pv, me, 0, &hx, &hy, wrap, w->cols, w->rows, k);
+            else { hx = me->body[0].x; hy = me->body[0].y; }
+            cam_x = (int)(hx * UI_CELL + (UI_CELL * 1.0f) / 2 - hcx);
+            cam_y = (int)(hy * UI_CELL + (UI_CELL * 1.0f) / 2 - hcy);
         }
     } else {
         cam_x = 0; cam_y = 0;           /* 经典地图：整张地图即屏幕 */
@@ -293,7 +343,7 @@ static void draw_board(const snake_world_t *w)
         lv_canvas_draw_rect(s_game.canvas, 1, 1, UI_CANVAS_W - 2, UI_CANVAS_H - 2, &fr);
     }
 
-    /* 小食物：4×4px，世界像素 -> 屏幕，视口外裁剪 */
+    /* 小食物：4×4px，世界像素 -> 屏幕，视口外裁剪（食物静态，不插值） */
     {
         lv_draw_rect_dsc_t fd;
         lv_draw_rect_dsc_init(&fd);
@@ -332,6 +382,11 @@ static void draw_board(const snake_world_t *w)
 
     for (i = 0; i < w->nsnakes; i++) {
         const snake_player_t *s = &w->snakes[i];
+        const snake_player_t *sp = NULL;                 /* 上一帧中的同一玩家（无则本帧直画） */
+        if (do_interp) {
+            for (j = 0; j < pv->nsnakes; j++)
+                if (pv->snakes[j].id == s->id && pv->snakes[j].len > 0) { sp = &pv->snakes[j]; break; }
+        }
         lv_color_t base = ui_palette_color(s->color);
         lv_draw_rect_dsc_t sd;
         lv_draw_rect_dsc_init(&sd);
@@ -343,10 +398,11 @@ static void draw_board(const snake_world_t *w)
             sd.border_color = lv_color_hex(0xffffff);
         }
         for (j = 0; j < s->len; j++) {
-            int cx = s->body[j].x, cy = s->body[j].y;
-            if (cx < 0 || cx >= w->cols || cy < 0 || cy >= w->rows) continue;
-            int sx = cx * UI_CELL + UI_CELL / 2 - cam_x;   /* 世界像素中心 -> 屏幕 */
-            int sy = cy * UI_CELL + UI_CELL / 2 - cam_y;
+            float fx, fy;
+            if (sp) interp_cell(sp, s, j, &fx, &fy, wrap, w->cols, w->rows, k);
+            else { fx = s->body[j].x; fy = s->body[j].y; }
+            int sx = (int)(fx * UI_CELL + (UI_CELL * 1.0f) / 2 - cam_x);   /* 世界像素中心 -> 屏幕 */
+            int sy = (int)(fy * UI_CELL + (UI_CELL * 1.0f) / 2 - cam_y);
             if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
             if (sx < -UI_CELL || sx > UI_CANVAS_W + UI_CELL ||
                 sy < -UI_CELL || sy > UI_CANVAS_H + UI_CELL) continue;
@@ -360,13 +416,30 @@ static void draw_board(const snake_world_t *w)
     lv_obj_invalidate(s_game.canvas);
 }
 
+/* 插值渲染定时器：两次状态帧之间高频重绘，让蛇身平滑滑动（约 30fps）。
+ * 仅在游戏屏激活且距最新状态不足一帧时重绘，避免无谓开销。 */
+static void interp_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_game.canvas) return;
+    if (lv_scr_act() != lv_obj_get_screen(s_game.canvas)) return;  /* 非游戏屏不重绘 */
+    if (!s_has_state) return;
+    if (lv_tick_get() - s_state_tick >= 100) return;              /* 已到最终位置 */
+    draw_board();
+}
+
 /* 刷新游戏屏：用最新世界状态重画棋盘，并更新顶部菜单栏文字
  * （本机昵称、得分、名次 rank/总人数、无敌剩余秒数）。
  * 每收到一帧服务端广播的 state 消息都会调用一次。 */
 void ui_game_update(lv_obj_t *s, const snake_world_t *w)
 {
     (void)s;
-    draw_board(w);
+    /* 保存前后两帧快照，供插值渲染平滑滑动 */
+    if (s_has_state) { s_w_prev = s_w_cur; s_has_prev = 1; }
+    s_w_cur = *w;
+    s_has_state = 1;
+    s_state_tick = lv_tick_get();
+    draw_board();
     if (w->my_id >= 0) s_game.my_id = w->my_id;
 
     const snake_player_t *me = NULL;
@@ -379,18 +452,18 @@ void ui_game_update(lv_obj_t *s, const snake_world_t *w)
         for (i = 0; i < w->nsnakes; i++)
             if (w->snakes[i].id != me->id && w->snakes[i].score > me->score) rank++;
         if (me->inv > 0) {
-            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d   Food: %d/%d   Invincible: %ds   Map: %s",
+            snprintf(hud, sizeof(hud), "玩家: %s  得分: %d  名次: %d/%d  食物: %d/%d  无敌: %ds  地图: %s",
                      me->name, me->score, rank, w->nsnakes,
                      me->small_eaten, SNAKE_LEN_PER_SMALL, me->inv,
-                     w->wrap ? "Wrap" : "Classic");
+                     w->wrap ? "环形" : "经典");
         } else {
-            snprintf(hud, sizeof(hud), "You: %s   Score: %d   Rank: %d/%d   Food: %d/%d   Map: %s",
+            snprintf(hud, sizeof(hud), "玩家: %s  得分: %d  名次: %d/%d  食物: %d/%d  地图: %s",
                      me->name, me->score, rank, w->nsnakes,
                      me->small_eaten, SNAKE_LEN_PER_SMALL,
-                     w->wrap ? "Wrap" : "Classic");
+                     w->wrap ? "环形" : "经典");
         }
     } else {
-        snprintf(hud, sizeof(hud), "Score: %d   Alive: %d", w->my_score, w->nsnakes);
+        snprintf(hud, sizeof(hud), "得分: %d  存活: %d", w->my_score, w->nsnakes);
     }
     lv_label_set_text(s_game.hud, hud);
 }
@@ -402,12 +475,12 @@ void ui_game_set_over(lv_obj_t *s, const snake_world_t *w)
     (void)s;
     char buf[192];
     if (w->winner_id == -1) {
-        snprintf(buf, sizeof(buf), "Game Over\n\nYour score: %d", w->my_score);
+        snprintf(buf, sizeof(buf), "游戏结束\n\n你的得分: %d", w->my_score);
     } else {
         const char *wname = "?";
         for (int i = 0; i < w->nsnakes; i++)
             if (w->snakes[i].id == w->winner_id) { wname = w->snakes[i].name; break; }
-        snprintf(buf, sizeof(buf), "Winner: %s\n\nYour score: %d", wname, w->my_score);
+        snprintf(buf, sizeof(buf), "胜者: %s\n\n你的得分: %d", wname, w->my_score);
     }
     lv_label_set_text(s_game.over_label, buf);
     lv_obj_clear_flag(s_game.over, LV_OBJ_FLAG_HIDDEN);

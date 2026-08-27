@@ -19,7 +19,7 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "lvgl/lvgl.h"
+#include "../lvgl/lvgl.h"
 
 #include "net/net.h"
 #include "net/protocol.h"
@@ -37,7 +37,7 @@ static lv_obj_t *s_main_scr = NULL;
 static lv_obj_t *s_room_scr = NULL;
 static lv_obj_t *s_game_scr = NULL;
 
-static char s_name[SNAKE_MAX_NAME + 1] = "Player";
+static char s_name[SNAKE_MAX_NAME + 1] = "玩家";
 static int  s_joined = 0;        /* 已发送 join */
 static int  s_connected = 0;     /* 连接成功（应在主界面） */
 static int  s_room = -1;         /* 当前房间号 */
@@ -85,7 +85,7 @@ static void send_join_room(int room_id)
 /* ---------------- 回调：用户名 ---------------- */
 static void on_name(const char *name)
 {
-    snprintf(s_name, sizeof(s_name), "%s", name ? name : "Player");
+    snprintf(s_name, sizeof(s_name), "%s", name ? name : "玩家");
     s_joined = 0;
     s_room = -1;
 
@@ -94,7 +94,7 @@ static void on_name(const char *name)
     cfg.port = SERVER_PORT;
     cfg.timeout_ms = NET_TIMEOUT_MS;
     net_connect(&cfg);
-    ui_name_set_status(s_name_scr, "Connecting...");
+    ui_name_set_status(s_name_scr, "正在连接...");
 }
 
 /* ---------------- 回调：主菜单模式 ---------------- */
@@ -106,7 +106,7 @@ static void on_mode(const char *mode)
     } else if (strcmp(mode, MODE_MULTI) == 0) {
         send_mode(0);
         lv_scr_load(s_room_scr);
-        ui_room_set_status(s_room_scr, "Loading rooms...");
+        ui_room_set_status(s_room_scr, "加载房间...");
     }
 }
 
@@ -157,7 +157,7 @@ static void handle_disconnect(void)
     s_connected = 0;
     s_room = -1;
     lv_scr_load(s_name_scr);
-    ui_name_set_status(s_name_scr, "Connection lost. Try again.");
+    ui_name_set_status(s_name_scr, "连接断开，请重试。");
 }
 
 /* ---------------- 消息分发（一帧二进制） ---------------- */
@@ -173,7 +173,7 @@ static void handle_message(uint8_t type, const uint8_t *p, int plen)
             ui_game_set_my_id(s_world.my_id);
             s_connected = 1;
             lv_scr_load(s_main_scr);
-            ui_main_set_status(s_main_scr, "Connected");
+            ui_main_set_status(s_main_scr, "已连接");
             break;
         }
         case MSG_ROOMS: {
@@ -190,7 +190,7 @@ static void handle_message(uint8_t type, const uint8_t *p, int plen)
                 wraps[i]   = e[6];
             }
             ui_room_refresh(s_room_scr, ids, players, maxs, wraps, i);
-            ui_room_set_status(s_room_scr, i ? "Select a room" : "No rooms - Create or Random");
+            ui_room_set_status(s_room_scr, i ? "请选择房间" : "暂无房间，请创建");
             break;
         }
         case MSG_ROOM: {
@@ -235,7 +235,7 @@ static void handle_message(uint8_t type, const uint8_t *p, int plen)
             if (s_room >= 0 && s_game_scr) {
                 /* 游戏里出错，忽略 */
             } else if (lv_scr_act() == s_room_scr) {
-                ui_room_set_status(s_room_scr, msg);
+                ui_room_show_error(s_room_scr, msg);
             } else if (lv_scr_act() == s_main_scr) {
                 ui_main_set_status(s_main_scr, msg);
             } else {
@@ -276,7 +276,7 @@ void snakeInit(void)
     snake_world_init(&s_world);
     net_init();
 
-    s_name_scr = ui_name_screen_create(NULL, on_name, "Player");
+    s_name_scr = ui_name_screen_create(NULL, on_name, "玩家");
     s_main_scr = ui_main_screen_create(NULL, on_mode, on_map);
     s_room_scr = ui_room_screen_create(NULL, on_room);
     lv_scr_load(s_name_scr);

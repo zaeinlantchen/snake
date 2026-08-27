@@ -45,6 +45,8 @@ lv_obj_t *ui_room_screen_create(lv_obj_t *parent, ui_room_cb_t cb);
 void      ui_room_refresh(lv_obj_t *s, const int ids[], const int players[],
                           const int maxs[], const int wraps[], int n);
 void      ui_room_set_status(lv_obj_t *s, const char *msg);
+/* 房间屏错误提示：以弹出框显示，2 秒后自动消失 */
+void      ui_room_show_error(lv_obj_t *s, const char *msg);
 
 /* ---------------- 游戏屏 ---------------- */
 lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir);
