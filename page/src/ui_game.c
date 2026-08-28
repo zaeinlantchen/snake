@@ -32,8 +32,9 @@ typedef struct {
     lv_obj_t *hud;            /* 顶部分数/无敌 */
     lv_obj_t *over;           /* 本局结束遮罩 */
     lv_obj_t *over_label;
-    lv_obj_t *joy_base;       /* 摇杆底 */
+    lv_obj_t *joy_base;       /* 摇杆底（环形地图用） */
     lv_obj_t *joy_knob;       /* 摇杆头 */
+    lv_obj_t *btn_up, *btn_down, *btn_left, *btn_right;  /* 4 方向键（经典地图用） */
     int   last_sent_dir;      /* 上次发送给服务端的方向；-1 表示尚未发送 */
     int   my_id;
     ui_quit_cb_t on_quit;
@@ -42,6 +43,56 @@ typedef struct {
 static game_state_t s_game;
 
 static lv_color_t s_canvas_buf[UI_CANVAS_W * UI_CANVAS_H];
+
+/* ---------------- 经典地图方向键（4 向箭头按键） ---------------- */
+#define DKEY_SIZE    60      /* 方向键按钮尺寸 */
+#define DKEY_ARR     36      /* 箭头画布尺寸 */
+static lv_color_t s_arr_buf[4][DKEY_ARR * DKEY_ARR];
+
+/* 方向键点击回调：把方向交给上层（仅 4 向：上/下/左/右） */
+static void dir_key_pressed(lv_event_t *e)
+{
+    int dir = (int)(intptr_t)lv_event_get_user_data(e);
+    if (dir != s_game.last_sent_dir) {
+        s_game.last_sent_dir = dir;
+        if (s_game.on_dir) s_game.on_dir((snake_dir_t)dir);
+    }
+}
+
+/* 创建一个方向键：绿底圆角按钮 + 中央白色箭头（canvas 三角形） */
+static lv_obj_t *dir_key_create(lv_obj_t *parent, int dir, int x, int y)
+{
+    lv_obj_t *b = lv_btn_create(parent);
+    lv_obj_set_size(b, DKEY_SIZE, DKEY_SIZE);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, 12, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x2e8b57), 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *cv = lv_canvas_create(b);
+    lv_canvas_set_buffer(cv, s_arr_buf[dir & 3], DKEY_ARR, DKEY_ARR, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_center(cv);
+    lv_canvas_fill_bg(cv, lv_color_hex(0x2e8b57), LV_OPA_COVER);
+
+    /* LVGL 8.3 无 draw_triangle，用多边形填充（lv_canvas_draw_polygon + 矩形描画笔） */
+    lv_draw_rect_dsc_t rd;
+    lv_draw_rect_dsc_init(&rd);
+    rd.bg_opa = LV_OPA_COVER;
+    rd.bg_color = lv_color_hex(0xffffff);
+    rd.radius = 0;
+    lv_point_t pts[3];
+    switch (dir) {
+        case SNAKE_DIR_UP:    pts[0].x = 18; pts[0].y = 4;  pts[1].x = 6;  pts[1].y = 30; pts[2].x = 30; pts[2].y = 30; break;
+        case SNAKE_DIR_DOWN:  pts[0].x = 18; pts[0].y = 32; pts[1].x = 6;  pts[1].y = 6;  pts[2].x = 30; pts[2].y = 6;  break;
+        case SNAKE_DIR_LEFT:  pts[0].x = 4;  pts[0].y = 18; pts[1].x = 30; pts[1].y = 6;  pts[2].x = 30; pts[2].y = 30; break;
+        default:              pts[0].x = 32; pts[0].y = 18; pts[1].x = 6;  pts[1].y = 6;  pts[2].x = 6;  pts[2].y = 30; break;
+    }
+    lv_canvas_draw_polygon(cv, pts, 3, &rd);
+
+    lv_obj_add_event_cb(b, dir_key_pressed, LV_EVENT_CLICKED, (void *)(intptr_t)dir);
+    return b;
+}
 
 /* ---------------- 插值渲染状态（方案B：10Hz 状态 + ~30fps 渲染） ---------------- */
 static snake_world_t s_w_cur;    /* 最新一帧状态快照 */
@@ -196,6 +247,16 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_add_event_cb(base, joystick_release, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(base, joystick_release, LV_EVENT_PRESS_LOST, NULL);
 
+    /* 经典地图 4 方向键：左下角 D-pad 布局（默认隐藏，进入游戏后按地图类型切换） */
+    s_game.btn_up    = dir_key_create(scr, SNAKE_DIR_UP,    93, 232);
+    s_game.btn_left  = dir_key_create(scr, SNAKE_DIR_LEFT,  25, 292);
+    s_game.btn_right = dir_key_create(scr, SNAKE_DIR_RIGHT, 161, 292);
+    s_game.btn_down  = dir_key_create(scr, SNAKE_DIR_DOWN,  93, 352);
+    lv_obj_add_flag(s_game.btn_up, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_game.btn_left, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_game.btn_right, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_game.btn_down, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_t *over = lv_obj_create(scr);                     /* 本局结束遮罩：默认隐藏，收到 over 消息后弹出 */
     lv_obj_set_size(over, 560, 260);
     lv_obj_align(over, LV_ALIGN_CENTER, 40, 20);
@@ -275,6 +336,32 @@ static int seg_straddle(int sx1, int sy1, int sx2, int sy2, int wrap, int mapw, 
 {
     if (!wrap) return 0;
     return (abs(sx1 - sx2) > mapw / 2 || abs(sy1 - sy2) > maph / 2);
+}
+
+/* 经典地图蛇渲染：方块（body[] 为网格坐标），两帧间插值平滑移动 */
+static void draw_classic_snake(const snake_player_t *s, const snake_player_t *sp, float k)
+{
+    int n = s->len;
+    if (n > SNAKE_MAX_LEN) n = SNAKE_MAX_LEN;
+    if (n < 1) return;
+    lv_color_t base  = ui_palette_color(s->color);
+    lv_color_t headc = lv_color_mix(base, lv_color_white(), 96);
+    lv_draw_rect_dsc_t sd;
+    lv_draw_rect_dsc_init(&sd);
+    sd.bg_opa = LV_OPA_COVER;
+    sd.radius = 4;
+    if (s->inv > 0) { sd.border_opa = LV_OPA_COVER; sd.border_width = 2; sd.border_color = lv_color_hex(0xffffff); }
+    for (int j = 0; j < n; j++) {
+        float fx, fy;
+        if (sp) interp_pt(sp, s, j, &fx, &fy, 0, 0, 0, k);   /* 经典：格坐标插值（无环形包装） */
+        else { fx = (float)s->body[j].x; fy = (float)s->body[j].y; }
+        int sx = (int)(fx * UI_CELL);   /* 格 -> 屏幕像素（相机固定在原点） */
+        int sy = (int)(fy * UI_CELL);
+        if (sx < -UI_CELL || sx >= UI_CANVAS_W || sy < -UI_CELL || sy >= UI_CANVAS_H) continue;
+        if (j == 0) { sd.bg_color = headc; sd.radius = 6; }
+        else        { sd.bg_color = base;  sd.radius = 4; }
+        lv_canvas_draw_rect(s_game.canvas, sx + 1, sy + 1, UI_CELL - 2, UI_CELL - 2, &sd);
+    }
 }
 
 /* 绘制棋盘到 800×480 视口 canvas，顺序为：
@@ -399,6 +486,7 @@ static void draw_board(void)
             for (j = 0; j < pv->nsnakes; j++)
                 if (pv->snakes[j].id == s->id && pv->snakes[j].len > 0) { sp = &pv->snakes[j]; break; }
         }
+        if (!wrap) { draw_classic_snake(s, sp, k); continue; }   /* 经典：方块 */
         int n = s->len;
         if (n > SNAKE_MAX_LEN) n = SNAKE_MAX_LEN;
         if (n < 1) continue;
@@ -497,6 +585,25 @@ void ui_game_update(lv_obj_t *s, const snake_world_t *w)
     s_state_tick = lv_tick_get();
     draw_board();
     if (w->my_id >= 0) s_game.my_id = w->my_id;
+
+    /* 控制方式按地图切换：经典 = 4 方向键；环形 = 虚拟摇杆 */
+    {
+        int arrows = !w->wrap, joy = w->wrap;
+        if (s_game.btn_up) {
+            if (arrows) { lv_obj_clear_flag(s_game.btn_up, LV_OBJ_FLAG_HIDDEN);
+                          lv_obj_clear_flag(s_game.btn_down, LV_OBJ_FLAG_HIDDEN);
+                          lv_obj_clear_flag(s_game.btn_left, LV_OBJ_FLAG_HIDDEN);
+                          lv_obj_clear_flag(s_game.btn_right, LV_OBJ_FLAG_HIDDEN); }
+            else        { lv_obj_add_flag(s_game.btn_up, LV_OBJ_FLAG_HIDDEN);
+                          lv_obj_add_flag(s_game.btn_down, LV_OBJ_FLAG_HIDDEN);
+                          lv_obj_add_flag(s_game.btn_left, LV_OBJ_FLAG_HIDDEN);
+                          lv_obj_add_flag(s_game.btn_right, LV_OBJ_FLAG_HIDDEN); }
+        }
+        if (s_game.joy_base) {
+            if (joy) lv_obj_clear_flag(s_game.joy_base, LV_OBJ_FLAG_HIDDEN);
+            else     lv_obj_add_flag(s_game.joy_base, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 
     const snake_player_t *me = NULL;
     int i, rank = 1;
