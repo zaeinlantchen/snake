@@ -313,6 +313,7 @@ static int wrap_off(int d, int m)
 }
 
 /* 插值辅助：计算某条蛇第 j 个折线点（像素坐标）在插值系数 k∈[0,1] 时的位置。
+ * 仅在前后两帧该蛇点数相同时被调用（点数跳变的帧由调用方改为直画本帧，见 draw_board）。
  * 环形地图下相邻两帧的同点坐标差取"最近映像"，跨边界时走最短路径。 */
 static void interp_pt(const snake_player_t *pv, const snake_player_t *cur, int j,
                       float *fx, float *fy, int wrap, int mapw, int maph, float k)
@@ -336,6 +337,30 @@ static int seg_straddle(int sx1, int sy1, int sx2, int sy2, int wrap, int mapw, 
 {
     if (!wrap) return 0;
     return (abs(sx1 - sx2) > mapw / 2 || abs(sy1 - sy2) > maph / 2);
+}
+
+/* 环形地图：世界像素坐标 -> 屏幕坐标。
+ * 关键：先对"相机相对偏移"（世界坐标 - 蛇头世界坐标 = wx - cam_x - hcx）做最近映像折叠，
+ * 再加上屏幕中心偏移 hcx/hcy。
+ * 若直接把含 +hcx 的屏幕坐标丢进 wrap_off（阈值 mapw/2），会让蛇身在视口边缘
+ * （距蛇头 mapw/2 以内、但屏幕 x 已超 mapw/2）被提前折叠到对侧，相邻折线点一个在
+ * 视口内、一个跳到对侧，seg_straddle 判定"跨缝"从而跳过该段——于是右下角蛇身断开。
+ * 经典地图（wrap=0）相机固定在原点，屏幕坐标 = 世界坐标 - 相机。 */
+static void world_to_screen(int wx, int wy, int cam_x, int cam_y,
+                            int wrap, int mapw, int maph, int hcx, int hcy,
+                            int *sx, int *sy)
+{
+    int dx = wx - cam_x;
+    int dy = wy - cam_y;
+    if (wrap) {
+        dx = wrap_off(dx - hcx, mapw);
+        dy = wrap_off(dy - hcy, maph);
+        *sx = hcx + dx;
+        *sy = hcy + dy;
+    } else {
+        *sx = dx;
+        *sy = dy;
+    }
 }
 
 /* 经典地图蛇渲染：方块（body[] 为网格坐标），两帧间插值平滑移动 */
@@ -404,6 +429,8 @@ static void draw_board(void)
             if (have_pv) {
                 for (i = 0; i < pv->nsnakes; i++)
                     if (pv->snakes[i].id == me->id && pv->snakes[i].len > 0) { me_pv = &pv->snakes[i]; break; }
+                /* 点数跳变（吃食物变长/重生）时不做插值，直接对准本帧蛇头，避免塌陷 */
+                if (me_pv && me_pv->len != me->len) me_pv = NULL;
             }
             float hx, hy;
             if (me_pv) interp_pt(me_pv, me, 0, &hx, &hy, wrap, mapw, maph, k);
@@ -449,9 +476,8 @@ static void draw_board(void)
         fd.radius = 1;
         for (i = 0; i < w->food_count; i++) {
             if (w->foods[i].kind != 0) continue;
-            int sx = w->foods[i].x - cam_x;
-            int sy = w->foods[i].y - cam_y;
-            if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
+            int sx, sy;
+            world_to_screen(w->foods[i].x, w->foods[i].y, cam_x, cam_y, wrap, mapw, maph, hcx, hcy, &sx, &sy);
             if (sx < 0 || sx >= UI_CANVAS_W || sy < 0 || sy >= UI_CANVAS_H) continue;
             lv_canvas_draw_rect(s_game.canvas, sx, sy, SNAKE_SMALL_FOOD_SIZE, SNAKE_SMALL_FOOD_SIZE, &fd);
         }
@@ -469,9 +495,8 @@ static void draw_board(void)
         bd.border_color = lv_color_hex(0xfff3b0);
         for (i = 0; i < w->food_count; i++) {
             if (w->foods[i].kind != 1) continue;
-            int sx = w->foods[i].x - cam_x;
-            int sy = w->foods[i].y - cam_y;
-            if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
+            int sx, sy;
+            world_to_screen(w->foods[i].x, w->foods[i].y, cam_x, cam_y, wrap, mapw, maph, hcx, hcy, &sx, &sy);
             if (sx < 0 || sx >= UI_CANVAS_W || sy < 0 || sy >= UI_CANVAS_H) continue;
             lv_canvas_draw_rect(s_game.canvas, sx, sy, SNAKE_BIG_FOOD_SIZE, SNAKE_BIG_FOOD_SIZE, &bd);
         }
@@ -485,6 +510,11 @@ static void draw_board(void)
         if (have_pv) {
             for (j = 0; j < pv->nsnakes; j++)
                 if (pv->snakes[j].id == s->id && pv->snakes[j].len > 0) { sp = &pv->snakes[j]; break; }
+            /* 点数跳变（吃食物变长/重生）时不做插值，直接画本帧蛇身。
+             * 原因：环形轨迹点是"头插"的（每帧蛇头前进、新点插入 body[0]、旧点右移），
+             * 点数变化的帧里按索引逐点插值会让"新尾点"与"上帧尾点"重叠，蛇身视觉
+             * 突然塌陷一截再恢复；变长帧直画则蛇只是干净地长出一节。 */
+            if (sp && sp->len != s->len) sp = NULL;
         }
         if (!wrap) { draw_classic_snake(s, sp, k); continue; }   /* 经典：方块 */
         int n = s->len;
@@ -497,10 +527,7 @@ static void draw_board(void)
             float fx, fy;
             if (sp) interp_pt(sp, s, j, &fx, &fy, wrap, mapw, maph, k);
             else { fx = (float)s->body[j].x; fy = (float)s->body[j].y; }
-            int sx = (int)fx - cam_x;
-            int sy = (int)fy - cam_y;
-            if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
-            pts[j].x = sx; pts[j].y = sy;
+            world_to_screen((int)fx, (int)fy, cam_x, cam_y, wrap, mapw, maph, hcx, hcy, &pts[j].x, &pts[j].y);
         }
 
         lv_color_t base  = ui_palette_color(s->color);
@@ -540,8 +567,8 @@ static void draw_board(void)
             
             eye.bg_opa = LV_OPA_COVER;
             for (j = n - 1; j >= 0; j--) {
-                if (pts[j].x < -40 || pts[j].x > UI_CANVAS_W + 60 ||
-                    pts[j].y < -40 || pts[j].y > UI_CANVAS_H + 60) continue; // 视口外不画
+                if (pts[j].x < -40 || pts[j].x > (UI_CANVAS_W + 40) ||
+                    pts[j].y < -40 || pts[j].y > (UI_CANVAS_H + 40)) continue; // 视口外不画
                 if (j == 0) {
                     cd.radius = 9;  cd.bg_color = headc;
                     eye.radius = 7; 
