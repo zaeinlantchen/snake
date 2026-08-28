@@ -12,6 +12,9 @@
  *   - 每条蛇带"无敌"剩余秒数（inv），>0 表示仍处出生无敌期。
  *   - 食物直接使用屏幕像素坐标（左上角）：小食物 4×4px（kind=0）、
  *     大食物 16×16px（kind=1），客户端按坐标直接绘制，不再做网格换算。
+ *   - 蛇身 body 为"轨迹折线"像素坐标（连续移动模型）：body[0]=蛇头中心，
+ *     后续点为蛇头走过的轨迹，相邻两点沿路径间距约 20px；环形地图坐标已
+ *     包装（含跨边点），经典地图为地图内坐标。len 为折线点数。
  *   - small_eaten 为本机累计吃掉的小食物数（每 10 个长度 +1），用于 HUD 显示。
  */
 
@@ -44,17 +47,17 @@ typedef struct {
     int kind;
 } snake_food_t;
 
-/* 一条蛇 */
+/* 一条蛇（阶段C：身体为轨迹折线，像素坐标） */
 typedef struct {
     int   id;                          /* 玩家 id */
     char  name[SNAKE_MAX_NAME + 1];
     int   color;                       /* 调色板索引 */
-    int   len;                         /* 身节数 */
+    int   len;                         /* 折线点数（body[] 有效点数） */
     int   score;                       /* 得分 */
     int   inv;                         /* 剩余无敌秒数（0=无） */
     int   small_eaten;                 /* 已累计吃掉的小食物数（每 10 个长度 +1） */
     int   alive;                       /* 本帧是否存活 */
-    snake_point_t body[SNAKE_MAX_LEN];
+    snake_point_t body[SNAKE_MAX_LEN]; /* 轨迹折线点（像素坐标），body[0]=蛇头中心 */
 } snake_player_t;
 
 /* 整个世界状态（一帧快照） */

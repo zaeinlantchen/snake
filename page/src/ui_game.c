@@ -250,12 +250,12 @@ static int wrap_off(int d, int m)
     return d;
 }
 
-/* 插值辅助：计算某条蛇第 j 节在插值系数 k∈[0,1] 时的连续格坐标（float）。
- * 环形地图下相邻两帧的同节坐标差取"最近映像"，跨边界时走最短路径。 */
-static void interp_cell(const snake_player_t *pv, const snake_player_t *cur, int j,
-                        float *fx, float *fy, int wrap, int cols, int rows, float k)
+/* 插值辅助：计算某条蛇第 j 个折线点（像素坐标）在插值系数 k∈[0,1] 时的位置。
+ * 环形地图下相邻两帧的同点坐标差取"最近映像"，跨边界时走最短路径。 */
+static void interp_pt(const snake_player_t *pv, const snake_player_t *cur, int j,
+                      float *fx, float *fy, int wrap, int mapw, int maph, float k)
 {
-    /* 上一帧该节缺失（蛇在生长/重生）时，退化为上一帧蛇尾或本帧位置 */
+    /* 上一帧该点缺失（蛇在生长/重生）时，退化为上一帧尾部或本帧位置 */
     int pl = (pv && pv->len > 0) ? pv->len : 0;
     int pi = (pl > 0 && j < pl) ? j : (pl > 0 ? pl - 1 : 0);
     int px = (pl > 0) ? pv->body[pi].x : cur->body[j].x;
@@ -263,9 +263,17 @@ static void interp_cell(const snake_player_t *pv, const snake_player_t *cur, int
     int cx = cur->body[j].x, cy = cur->body[j].y;
     float dx = (float)(cx - px);
     float dy = (float)(cy - py);
-    if (wrap) { dx = (float)wrap_off((int)dx, cols); dy = (float)wrap_off((int)dy, rows); }
+    if (wrap) { dx = (float)wrap_off((int)dx, mapw); dy = (float)wrap_off((int)dy, maph); }
     *fx = px + dx * k;
     *fy = py + dy * k;
+}
+
+/* 两相邻折线点折叠到屏幕后是否"跨缝"（跨越环形地图的缝合线）。
+ * 跨缝段的中间部分在视口外，整段直连会横穿屏幕，应跳过不画。 */
+static int seg_straddle(int sx1, int sy1, int sx2, int sy2, int wrap, int mapw, int maph)
+{
+    if (!wrap) return 0;
+    return (abs(sx1 - sx2) > mapw / 2 || abs(sy1 - sy2) > maph / 2);
 }
 
 /* 绘制棋盘到 800×480 视口 canvas，顺序为：
@@ -284,7 +292,10 @@ static void draw_board(void)
     const snake_world_t *pv = (s_has_state && s_has_prev) ? &s_w_prev : NULL;
     uint32_t dt = lv_tick_get() - s_state_tick;             /* 距最新状态的时间 */
     float k = (dt >= 100) ? 1.0f : (float)dt / 100.0f;      /* 插值系数（10Hz=100ms/帧） */
-    const int do_interp = (pv && k > 0.0f && k < 1.0f);
+    /* 只要有前帧就恒走插值：k=0 画上一帧位置、k=1 画本帧位置，位移单调向前。
+     * （若用"仅 k∈(0,1) 才插值"，帧到达瞬间 k=0 会直接画本帧，随后定时器又以
+     *  k=0.33 画回上一帧方向，造成每帧前后振荡——即画面抖动。） */
+    const int have_pv = (pv != NULL);
 
     lv_color_t bg    = lv_color_hex(0xf7f3e8);   /* 米白色地图底色 */
     lv_color_t grid  = lv_color_hex(0xe9e1cc);   /* 浅米色网格线 */
@@ -298,20 +309,20 @@ static void draw_board(void)
     int x, y, i, j;
 
     if (wrap) {
-        /* 环形地图：相机对准"插值后"的本机蛇头，蛇头始终平滑地显示在屏幕中心 */
+        /* 环形地图：相机对准"插值后"的本机蛇头（像素坐标），蛇头始终平滑显示在屏幕中心 */
         const snake_player_t *me = NULL, *me_pv = NULL;
         for (i = 0; i < w->nsnakes; i++)
             if (w->snakes[i].id == s_game.my_id) { me = &w->snakes[i]; break; }
         if (me && me->len > 0) {
-            if (do_interp) {
+            if (have_pv) {
                 for (i = 0; i < pv->nsnakes; i++)
                     if (pv->snakes[i].id == me->id && pv->snakes[i].len > 0) { me_pv = &pv->snakes[i]; break; }
             }
             float hx, hy;
-            if (me_pv) interp_cell(me_pv, me, 0, &hx, &hy, wrap, w->cols, w->rows, k);
-            else { hx = me->body[0].x; hy = me->body[0].y; }
-            cam_x = (int)(hx * UI_CELL + (UI_CELL * 1.0f) / 2 - hcx);
-            cam_y = (int)(hy * UI_CELL + (UI_CELL * 1.0f) / 2 - hcy);
+            if (me_pv) interp_pt(me_pv, me, 0, &hx, &hy, wrap, mapw, maph, k);
+            else { hx = (float)me->body[0].x; hy = (float)me->body[0].y; }
+            cam_x = (int)hx - hcx;
+            cam_y = (int)hy - hcy;
         }
     } else {
         cam_x = 0; cam_y = 0;           /* 经典地图：整张地图即屏幕 */
@@ -380,37 +391,82 @@ static void draw_board(void)
         }
     }
 
+    /* 蛇：连续轨迹折线（像素坐标）。逐段画圆头粗线，并在各折点补圆点使拐角
+     * 圆润、蛇身连续；无敌中的蛇先画白色粗线做护盾描边。跨环形缝合线的段跳过。 */
     for (i = 0; i < w->nsnakes; i++) {
         const snake_player_t *s = &w->snakes[i];
         const snake_player_t *sp = NULL;                 /* 上一帧中的同一玩家（无则本帧直画） */
-        if (do_interp) {
+        if (have_pv) {
             for (j = 0; j < pv->nsnakes; j++)
                 if (pv->snakes[j].id == s->id && pv->snakes[j].len > 0) { sp = &pv->snakes[j]; break; }
         }
-        lv_color_t base = ui_palette_color(s->color);
-        lv_draw_rect_dsc_t sd;
-        lv_draw_rect_dsc_init(&sd);
-        sd.bg_opa = LV_OPA_COVER;
-        sd.radius = 4;
-        if (s->inv > 0) {
-            sd.border_opa = LV_OPA_COVER;
-            sd.border_width = 2;
-            sd.border_color = lv_color_hex(0xffffff);
-        }
-        for (j = 0; j < s->len; j++) {
+        int n = s->len;
+        if (n > SNAKE_MAX_LEN) n = SNAKE_MAX_LEN;
+        if (n < 1) continue;
+
+        /* 全部折线点插值并折叠到屏幕坐标 */
+        static lv_point_t pts[SNAKE_MAX_LEN];
+        for (j = 0; j < n; j++) {
             float fx, fy;
-            if (sp) interp_cell(sp, s, j, &fx, &fy, wrap, w->cols, w->rows, k);
-            else { fx = s->body[j].x; fy = s->body[j].y; }
-            int sx = (int)(fx * UI_CELL + (UI_CELL * 1.0f) / 2 - cam_x);   /* 世界像素中心 -> 屏幕 */
-            int sy = (int)(fy * UI_CELL + (UI_CELL * 1.0f) / 2 - cam_y);
+            if (sp) interp_pt(sp, s, j, &fx, &fy, wrap, mapw, maph, k);
+            else { fx = (float)s->body[j].x; fy = (float)s->body[j].y; }
+            int sx = (int)fx - cam_x;
+            int sy = (int)fy - cam_y;
             if (wrap) { sx = wrap_off(sx, mapw); sy = wrap_off(sy, maph); }
-            if (sx < -UI_CELL || sx > UI_CANVAS_W + UI_CELL ||
-                sy < -UI_CELL || sy > UI_CANVAS_H + UI_CELL) continue;
-            int px = sx - UI_CELL / 2 + 1;
-            int py = sy - UI_CELL / 2 + 1;
-            if (j == 0) { sd.bg_color = lv_color_mix(base, lv_color_white(), 96); sd.radius = 6; }
-            else        { sd.bg_color = base; sd.radius = 4; }
-            lv_canvas_draw_rect(s_game.canvas, px, py, UI_CELL, UI_CELL, &sd);
+            pts[j].x = sx; pts[j].y = sy;
+        }
+
+        lv_color_t base  = ui_palette_color(s->color);
+        lv_color_t headc = lv_color_mix(base, lv_color_white(), 96);
+        const int inv = (s->inv > 0);
+
+        /* 无敌护盾：白色粗线描边（画在主体线之下） */
+        if (inv) {
+            lv_draw_line_dsc_t wl;
+            lv_draw_line_dsc_init(&wl);
+            wl.color = lv_color_hex(0xffffff);
+            wl.width = 20; wl.opa = LV_OPA_COVER; wl.round_start = 1; wl.round_end = 1;
+            for (j = 0; j + 1 < n; j++) {
+                if (seg_straddle(pts[j].x, pts[j].y, pts[j + 1].x, pts[j + 1].y, wrap, mapw, maph)) continue;
+                lv_canvas_draw_line(s_game.canvas, &pts[j], 2, &wl);
+            }
+        }
+        /* 主体：逐段画圆头粗线（头段更亮） */
+        {
+            lv_draw_line_dsc_t ld;
+            lv_draw_line_dsc_init(&ld);
+            ld.width = 14; ld.opa = LV_OPA_COVER; ld.round_start = 1; ld.round_end = 1;
+            for (j = 0; j + 1 < n; j++) {
+                if (seg_straddle(pts[j].x, pts[j].y, pts[j + 1].x, pts[j + 1].y, wrap, mapw, maph)) continue;
+                ld.color = (j == 0) ? headc : base;
+                lv_canvas_draw_line(s_game.canvas, &pts[j], 2, &ld);
+            }
+        }
+        /* 折点补圆 + 蛇头圆：让拐角圆润、蛇身视觉连续 */
+        {
+            lv_draw_rect_dsc_t cd;
+            lv_draw_rect_dsc_t eye;
+            lv_draw_rect_dsc_init(&cd);
+            lv_draw_rect_dsc_init(&eye);
+            cd.bg_opa = LV_OPA_COVER;
+            cd.border_opa = LV_OPA_TRANSP;
+            eye.bg_opa = LV_OPA_COVER;
+            for (j = 0; j < n; j++) {
+                if (pts[j].x < -20 || pts[j].x > UI_CANVAS_W + 20 ||
+                    pts[j].y < -20 || pts[j].y > UI_CANVAS_H + 20) continue;
+                if (j == 0) {
+                    cd.radius = 9;  cd.bg_color = headc;
+                    eye.radius = 7; 
+                    lv_canvas_draw_rect(s_game.canvas, pts[j].x - 9, pts[j].y - 9, 18, 18, &cd);
+                    eye.bg_color = lv_color_hex(0x00ffffff);
+                    lv_canvas_draw_rect(s_game.canvas, pts[j].x, pts[j].y, 2, 2, &eye);
+                    eye.bg_color = lv_color_hex(0x00000000);
+                    lv_canvas_draw_rect(s_game.canvas, pts[j].x - 7, pts[j].y - 7, 14, 14, &eye);
+                } else {
+                    cd.radius = 7;  cd.bg_color = base;
+                    lv_canvas_draw_rect(s_game.canvas, pts[j].x - 7, pts[j].y - 7, 14, 14, &cd);
+                }
+            }
         }
     }
     lv_obj_invalidate(s_game.canvas);

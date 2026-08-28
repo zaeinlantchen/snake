@@ -51,7 +51,9 @@ void snake_world_reset_round(snake_world_t *w)
  *   tick u32, small_n u16, small_n×{px u16,py u16}, big_n u8, big_n×{px u16,py u16},
  *   nsnakes u8, nsnakes×{id u32,color u8,len u16,score u16,inv u8,small_eaten u8,
  *                        name[16], body[len×{x u16,y u16}]}
- * 所有整数均为大端序。 */
+ * 所有整数均为大端序。
+ * body 为轨迹折线点像素坐标（body[0]=蛇头中心，阶段C 连续移动模型），
+ * 环形地图坐标已包装（含跨边点），经典地图为地图内坐标。 */
 int snake_parse_state(snake_world_t *w, const uint8_t *payload, int plen)
 {
     const uint8_t *p = payload;
