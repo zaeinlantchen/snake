@@ -166,6 +166,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
 
     s_game.canvas = lv_canvas_create(scr);                   /* 整屏棋盘画布：800×480 视口，绘制食物与所有蛇 */
     lv_canvas_set_buffer(s_game.canvas, s_canvas_buf, UI_CANVAS_W, UI_CANVAS_H, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_set_style_border_width(s_game.canvas, 0, 0);
     lv_obj_set_pos(s_game.canvas, 0, 0);
 
     lv_obj_t *base = lv_obj_create(scr);                     /* 摇杆底座：圆形透明区域，叠在棋盘左下，接收触摸以判定方向 */
@@ -175,7 +176,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_set_style_bg_color(base, lv_color_hex(0x22394b), 0);
     lv_obj_set_style_bg_opa(base, 0, 0);                     /* 透明背景，不遮挡棋盘 */
     lv_obj_set_style_pad_all(base, 0, 0);                    /* 关键：去掉默认主题的 20px 内边距，否则子控件坐标被整体偏移一个网格 */
-    lv_obj_set_style_border_width(base, 0, 0);             /* 去掉边框,先注释，用于作为摇杆头的参照物 */
+    lv_obj_set_style_border_width(base, 0, 0);             /* 去掉边框 */
     lv_obj_clear_flag(base, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(base, LV_OBJ_FLAG_CLICKABLE);
 
@@ -219,7 +220,7 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     s_game.joy_base = base;
     s_game.joy_knob = knob;
 
-    lv_timer_create(interp_timer_cb, 33, NULL);    /* 插值渲染定时器：约 30fps */
+    lv_timer_create(interp_timer_cb, 16, NULL);    /* 插值渲染定时器：约 30fps */
     return scr;
 }
 
@@ -299,7 +300,6 @@ static void draw_board(void)
 
     lv_color_t bg    = lv_color_hex(0xf7f3e8);   /* 米白色地图底色 */
     lv_color_t grid  = lv_color_hex(0xe9e1cc);   /* 浅米色网格线 */
-    lv_color_t frame = lv_color_hex(0xc9bb90);   /* 深米色边框 */
     lv_color_t food  = lv_color_hex(0xff5252);
     static int cam_x = 0, cam_y = 0;    /* 相机：屏幕左上角对应的世界像素坐标 */
     const int wrap = w->wrap;
@@ -349,8 +349,7 @@ static void draw_board(void)
         lv_draw_rect_dsc_init(&fr);
         fr.bg_opa = LV_OPA_TRANSP;
         fr.border_opa = LV_OPA_COVER;
-        fr.border_width = 3;
-        fr.border_color = frame;
+        fr.border_width = 0;
         lv_canvas_draw_rect(s_game.canvas, 1, 1, UI_CANVAS_W - 2, UI_CANVAS_H - 2, &fr);
     }
 
@@ -450,18 +449,19 @@ static void draw_board(void)
             lv_draw_rect_dsc_init(&eye);
             cd.bg_opa = LV_OPA_COVER;
             cd.border_opa = LV_OPA_TRANSP;
+            
             eye.bg_opa = LV_OPA_COVER;
-            for (j = 0; j < n; j++) {
-                if (pts[j].x < -20 || pts[j].x > UI_CANVAS_W + 20 ||
-                    pts[j].y < -20 || pts[j].y > UI_CANVAS_H + 20) continue;
+            for (j = n - 1; j >= 0; j--) {
+                if (pts[j].x < -40 || pts[j].x > UI_CANVAS_W + 60 ||
+                    pts[j].y < -40 || pts[j].y > UI_CANVAS_H + 60) continue; // 视口外不画
                 if (j == 0) {
                     cd.radius = 9;  cd.bg_color = headc;
                     eye.radius = 7; 
                     lv_canvas_draw_rect(s_game.canvas, pts[j].x - 9, pts[j].y - 9, 18, 18, &cd);
-                    eye.bg_color = lv_color_hex(0x00ffffff);
-                    lv_canvas_draw_rect(s_game.canvas, pts[j].x, pts[j].y, 2, 2, &eye);
                     eye.bg_color = lv_color_hex(0x00000000);
                     lv_canvas_draw_rect(s_game.canvas, pts[j].x - 7, pts[j].y - 7, 14, 14, &eye);
+                    eye.bg_color = lv_color_hex(0x00ffffff);
+                    lv_canvas_draw_rect(s_game.canvas, pts[j].x, pts[j].y, 2, 2, &eye);
                 } else {
                     cd.radius = 7;  cd.bg_color = base;
                     lv_canvas_draw_rect(s_game.canvas, pts[j].x - 7, pts[j].y - 7, 14, 14, &cd);

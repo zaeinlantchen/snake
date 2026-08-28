@@ -96,9 +96,10 @@ lv_obj_t *ui_name_screen_create(lv_obj_t *parent, ui_name_cb_t on_name, const ch
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t *ta = lv_textarea_create(card);               /* 昵称输入框（单行） */
+    lv_textarea_set_placeholder_text(ta, "请输入昵称");
     lv_textarea_set_one_line(ta, 1);
     lv_obj_set_scrollbar_mode(ta, LV_SCROLLBAR_MODE_OFF);
-    lv_textarea_set_text(ta, def_name ? def_name : UI_DEFAULT_NAME);
+    lv_textarea_set_text(ta, def_name);
     lv_obj_set_size(ta, 240, 56);
     lv_obj_set_style_bg_color(ta, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_bg_opa(ta, LV_OPA_COVER, 0);
