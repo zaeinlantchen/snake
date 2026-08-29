@@ -47,6 +47,12 @@ typedef struct {
     int kind;
 } snake_food_t;
 
+/* 一个技能道具（仅环形地图）：x/y 为屏幕像素坐标（中心），kind=0 加速, 1=护盾 */
+typedef struct {
+    int kind;
+    int x, y;
+} snake_pickup_t;
+
 /* 一条蛇（阶段C：身体为轨迹折线，像素坐标） */
 typedef struct {
     int   id;                          /* 玩家 id */
@@ -56,6 +62,9 @@ typedef struct {
     int   score;                       /* 得分 */
     int   inv;                         /* 剩余无敌秒数（0=无） */
     int   small_eaten;                 /* 已累计吃掉的小食物数（每 10 个长度 +1） */
+    int   skills;                      /* 持有技能位图：bit0=加速, bit1=护盾（拾取未使用） */
+    int   skill_speed_ticks;           /* 加速效果剩余 ticks（>0 = 加速激活中） */
+    int   skill_shield_ticks;          /* 护盾效果剩余 ticks（>0 = 护盾激活中） */
     int   alive;                       /* 本帧是否存活 */
     snake_point_t body[SNAKE_MAX_LEN]; /* 轨迹折线点（像素坐标），body[0]=蛇头中心 */
 } snake_player_t;
@@ -65,6 +74,8 @@ typedef struct {
     int              tick;
     snake_food_t     foods[SNAKE_FOOD_MAX];
     int              food_count;
+    snake_pickup_t   pickups[SNAKE_PICKUP_MAX];
+    int              pickup_count;
     int              nsnakes;
     snake_player_t   snakes[SNAKE_MAX_PER_ROOM];
     int              my_id;        /* 本机玩家 id */

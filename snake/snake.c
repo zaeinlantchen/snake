@@ -89,6 +89,19 @@ int snake_parse_state(snake_world_t *w, const uint8_t *payload, int plen)
         f->kind = 1;
     }
 
+    /* 技能道具（仅环形地图）：{ kind u8, 中心 px u16, py u16 } */
+    if (remain < 1) return -1;
+    cnt = pr_get_u8(p); p += 1; remain -= 1;
+    if (cnt > SNAKE_PICKUP_MAX) cnt = SNAKE_PICKUP_MAX;
+    w->pickup_count = 0;
+    for (i = 0; i < cnt; i++) {
+        if (remain < 5) return -1;
+        snake_pickup_t *pk = &w->pickups[w->pickup_count++];
+        pk->kind = pr_get_u8(p); p += 1; remain -= 1;
+        pk->x = pr_get_u16(p); p += 2; remain -= 2;
+        pk->y = pr_get_u16(p); p += 2; remain -= 2;
+    }
+
     /* 蛇 */
     if (remain < 1) return -1;
     w->nsnakes = pr_get_u8(p); p += 1; remain -= 1;
@@ -96,13 +109,16 @@ int snake_parse_state(snake_world_t *w, const uint8_t *payload, int plen)
     for (i = 0; i < w->nsnakes; i++) {
         snake_player_t *s = &w->snakes[i];
         int len, b;
-        if (remain < 4 + 1 + 2 + 2 + 1 + 1 + SNAKE_MAX_NAME) return -1;
+        if (remain < 4 + 1 + 2 + 2 + 1 + 1 + 3 + SNAKE_MAX_NAME) return -1;
         s->id    = (int)pr_get_u32(p); p += 4; remain -= 4;
         s->color = pr_get_u8(p); p += 1; remain -= 1;
         len      = pr_get_u16(p); p += 2; remain -= 2;
         s->score = pr_get_u16(p); p += 2; remain -= 2;
         s->inv   = pr_get_u8(p); p += 1; remain -= 1;
         s->small_eaten = pr_get_u8(p); p += 1; remain -= 1;
+        s->skills = pr_get_u8(p); p += 1; remain -= 1;              /* 持有技能位图 */
+        s->skill_speed_ticks = pr_get_u8(p); p += 1; remain -= 1;   /* 加速剩余 ticks */
+        s->skill_shield_ticks = pr_get_u8(p); p += 1; remain -= 1;  /* 护盾剩余 ticks */
         memcpy(s->name, p, SNAKE_MAX_NAME);
         s->name[SNAKE_MAX_NAME] = '\0';
         p += SNAKE_MAX_NAME; remain -= SNAKE_MAX_NAME;

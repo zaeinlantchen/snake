@@ -24,6 +24,7 @@ typedef void (*ui_map_cb_t)(int wrap);                  /* 主菜单：地图选
 typedef void (*ui_room_cb_t)(int action, int room_id);  /* 房间屏操作 */
 typedef void (*ui_quit_cb_t)(void);                     /* 游戏屏"退出"回菜单 */
 typedef void (*ui_dir_cb_t)(snake_dir_t dir);           /* 摇杆方向 */
+typedef void (*ui_skill_cb_t)(int skill);               /* 使用技能：0=加速, 1=护盾 */
 
 /* 房间屏操作动作 */
 #define UI_ROOM_CREATE 0
@@ -49,7 +50,8 @@ void      ui_room_set_status(lv_obj_t *s, const char *msg);
 void      ui_room_show_error(lv_obj_t *s, const char *msg);
 
 /* ---------------- 游戏屏 ---------------- */
-lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir);
+lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir,
+                                ui_skill_cb_t on_skill);
 void      ui_game_update(lv_obj_t *s, const snake_world_t *w);
 void      ui_game_set_over(lv_obj_t *s, const snake_world_t *w);
 void      ui_game_clear_over(lv_obj_t *s);

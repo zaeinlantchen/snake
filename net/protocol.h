@@ -28,6 +28,8 @@
  *    MSG_DIR(7)         负载: dir u8 (0..7)          设置方向（不能 180° 反转）
  *    MSG_LEAVE(8)       无负载                        离开房间，回到主菜单（保持连接）
  *    MSG_BYE(9)         无负载                        断开连接（可选）
+ *    MSG_USE_SKILL(10)  负载: skill u8                使用技能（0=加速, 1=护盾），
+ *                                                仅环形地图；须已持有该技能，用后进入效果期
  *
  *  服务端 -> 客户端
  *    MSG_WELCOME(20)   负载: id u32, cols u16, rows u16
@@ -46,12 +48,19 @@
  *    small_n ×    { px u16, py u16 }       小食物左上角像素坐标（4×4px）
  *    big_n        u8                       大食物数量
  *    big_n ×      { px u16, py u16 }       大食物左上角像素坐标（16×16px）
+ *    pickup_n     u8                       技能道具数量（仅环形地图）
+ *    pickup_n ×   { kind u8, px u16, py u16 }  技能道具中心像素坐标；kind: 0=加速, 1=护盾
  *    nsnakes      u8
  *    nsnakes ×    {
  *        id u32, color u8, len u16, score u16, inv u8, small_eaten u8,
+ *        skills u8, speed_ticks u8, shield_ticks u8,
  *        name[16],
  *        body[ len × { x u16, y u16 } ]    蛇身折线点像素坐标
  *    }
+ *    技能说明（仅环形地图）：
+ *    - skills 位图：bit0=持加速, bit1=持护盾（拾取到、未使用）；
+ *    - speed_ticks / shield_ticks：对应技能效果剩余 ticks（>0 表示激活中，用完即失效）；
+ *    - 每条蛇最多同时持有 2 个技能（加速/护盾各 1），拾取同类或已满不生效。
  *    蛇身说明（连续移动模型，像素级）：
  *    - 蛇头像素级连续前进（每 TICK_MS 前进 20px），身体 = 蛇头走过的折线轨迹；
  *    - body[0] 为蛇头（像素坐标，中心点），后续点为轨迹，相邻两点沿路径间距约 20px；
@@ -88,6 +97,7 @@
 #define MSG_DIR         7
 #define MSG_LEAVE       8
 #define MSG_BYE         9
+#define MSG_USE_SKILL   10
 
 #define MSG_WELCOME     20
 #define MSG_ROOMS       21
@@ -127,6 +137,16 @@
 #define SNAKE_MAX_NAME       16      /* 昵称最大长度（不含 '\0'） */
 #define SNAKE_MAX_PER_ROOM   8       /* 单个房间最大玩家数 */
 #define SNAKE_INV_TICKS      80      /* 出生无敌持续时间（80 * TICK_MS = 8s） */
+
+/* ---------------- 技能（仅环形地图） ---------------- */
+#define SKILL_SPEED         0       /* 技能类型：加速 */
+#define SKILL_SHIELD        1       /* 技能类型：护盾 */
+#define SKILL_BIT_SPEED     0x01    /* 持有/激活位图：加速 */
+#define SKILL_BIT_SHIELD    0x02    /* 持有/激活位图：护盾 */
+#define SNAKE_PICKUP_MAX    4       /* 地图技能道具上限（2 加速 + 2 护盾） */
+#define SNAKE_SKILL_GEN_TICKS 100   /* 技能道具生成间隔（100 * TICK_MS = 10s） */
+#define SKILL_SPEED_TICKS   50      /* 加速效果持续（50 * TICK_MS = 5s） */
+#define SKILL_SHIELD_TICKS  50      /* 护盾效果持续（50 * TICK_MS = 5s） */
 
 /* ---------------- 服务器接收缓冲（帧式解析用） ---------------- */
 #define PROTO_LINE_MAX       2048

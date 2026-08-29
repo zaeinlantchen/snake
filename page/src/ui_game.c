@@ -20,6 +20,8 @@
 #include "../../font.h"          /* 中文字体（FreeType） */
 
 LV_IMG_DECLARE(back);           /* LunaUI/img/back.c（200×200 黑色图标） */
+LV_IMG_DECLARE(Speedup);        /* LunaUI/img/Speedup.c（200×200 加速技能图标） */
+LV_IMG_DECLARE(Shield);         /* LunaUI/img/Shield.c（200×200 护盾技能图标） */
 
 #define UI_CELL        20
 #define UI_CANVAS_W    800     /* 视口宽（固定，与地图大小无关） */
@@ -35,10 +37,13 @@ typedef struct {
     lv_obj_t *joy_base;       /* 摇杆底（环形地图用） */
     lv_obj_t *joy_knob;       /* 摇杆头 */
     lv_obj_t *btn_up, *btn_down, *btn_left, *btn_right;  /* 4 方向键（经典地图用） */
+    lv_obj_t *skill_btns[2];  /* 技能栏按钮（0=加速, 1=护盾，环形地图用） */
+    lv_obj_t *skill_imgs[2];  /* 技能栏图标 */
     int   last_sent_dir;      /* 上次发送给服务端的方向；-1 表示尚未发送 */
     int   my_id;
     ui_quit_cb_t on_quit;
     ui_dir_cb_t  on_dir;
+    ui_skill_cb_t on_skill;
 } game_state_t;
 static game_state_t s_game;
 
@@ -92,6 +97,77 @@ static lv_obj_t *dir_key_create(lv_obj_t *parent, int dir, int x, int y)
 
     lv_obj_add_event_cb(b, dir_key_pressed, LV_EVENT_CLICKED, (void *)(intptr_t)dir);
     return b;
+}
+
+/* ---------------- 环形地图技能栏（加速/护盾） ---------------- */
+#define SKILL_BTN_SIZE  72      /* 技能栏按钮尺寸 */
+#define SKILL_ICON_ZOOM 72      /* 图标缩放（200→56px 常态） */
+#define SKILL_ICON_ZOOM_ON 92   /* 激活中放大（200→72px）高亮 */
+
+/* 技能图标点击回调：把技能类型交给上层发送 MSG_USE_SKILL（未持有/未激活时服务端会忽略） */
+static void skill_key_pressed(lv_event_t *e)
+{
+    int skill = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_game.on_skill) s_game.on_skill(skill);
+}
+
+/* 创建一个技能按钮：深色圆角底 + 对应图标（lv_img 缩放显示） */
+static lv_obj_t *skill_key_create(lv_obj_t *parent, int skill, int x, int y)
+{
+    lv_obj_t *b = lv_btn_create(parent);
+    lv_obj_set_size(b, SKILL_BTN_SIZE, SKILL_BTN_SIZE);
+    lv_obj_set_pos(b, x, y);
+    lv_obj_set_style_radius(b, 14, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x1b2a38), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_70, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *img = lv_img_create(b);
+    lv_img_set_src(img, (skill == SKILL_SPEED) ? &Speedup : &Shield);
+    lv_img_set_zoom(img, SKILL_ICON_ZOOM);
+    lv_obj_set_style_img_opa(img, 64, 0);   /* 初始未拾取：图标灰暗（不可用） */
+    lv_obj_center(img);
+
+    lv_obj_add_event_cb(b, skill_key_pressed, LV_EVENT_CLICKED, (void *)(intptr_t)skill);
+    s_game.skill_btns[skill] = b;
+    s_game.skill_imgs[skill] = img;
+    return b;
+}
+
+/* 按本机蛇的技能状态刷新技能栏，三种状态有明显差异（提供"能否使用"的反馈）：
+ *   不可用   -> 图标灰暗（opa 64）+ 无边框
+ *   已持有   -> 图标全亮 + 绿色边框（可点击使用）
+ *   激活中   -> 图标全亮 + 放大 + 金色边框（效果进行中） */
+static void skill_bar_update(const snake_world_t *w)
+{
+    int i;
+    const snake_player_t *me = NULL;
+    for (i = 0; i < w->nsnakes; i++)
+        if (w->snakes[i].id == s_game.my_id) { me = &w->snakes[i]; break; }
+    if (!me || !s_game.skill_btns[0]) return;
+
+    for (i = 0; i < 2; i++) {
+        lv_obj_t *b   = s_game.skill_btns[i];
+        lv_obj_t *img = s_game.skill_imgs[i];
+        int bit = (i == SKILL_SPEED) ? SKILL_BIT_SPEED : SKILL_BIT_SHIELD;
+        int act_ticks = (i == SKILL_SPEED) ? me->skill_speed_ticks : me->skill_shield_ticks;
+        if (act_ticks > 0) {                         /* 激活中：金框 + 放大 + 全亮 */
+            lv_obj_set_style_border_color(b, lv_color_hex(0xffd166), 0);
+            lv_obj_set_style_border_width(b, 3, 0);
+            lv_obj_set_style_img_opa(img, 255, 0);
+            lv_img_set_zoom(img, SKILL_ICON_ZOOM_ON);
+        } else if (me->skills & bit) {               /* 已持有：绿框 + 全亮 */
+            lv_obj_set_style_border_color(b, lv_color_hex(0x43e97b), 0);
+            lv_obj_set_style_border_width(b, 3, 0);
+            lv_obj_set_style_img_opa(img, 255, 0);
+            lv_img_set_zoom(img, SKILL_ICON_ZOOM);
+        } else {                                     /* 不可用：无边框 + 灰暗 */
+            lv_obj_set_style_border_width(b, 0, 0);
+            lv_obj_set_style_img_opa(img, 64, 0);
+            lv_img_set_zoom(img, SKILL_ICON_ZOOM);
+        }
+    }
 }
 
 /* ---------------- 插值渲染状态（方案B：10Hz 状态 + ~30fps 渲染） ---------------- */
@@ -180,11 +256,13 @@ static void quit_pressed(lv_event_t *e) { (void)e; if (s_game.on_quit) s_game.on
  *   ③ 左下虚拟摇杆（base 底座 + knob 摇杆头）：透明底座叠在棋盘上，拖动控制 8 方向移动。
  * 屏幕中央另有一个默认隐藏的“本局结束”遮罩（over）。
  * 返回值：游戏屏对象（由上层用 lv_scr_load() 切换到该屏）。 */
-lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir)
+lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_cb_t on_dir,
+                                ui_skill_cb_t on_skill)
 {
     memset(&s_game, 0, sizeof(s_game));
     s_game.on_quit = on_quit;
     s_game.on_dir  = on_dir;
+    s_game.on_skill = on_skill;
     s_game.my_id = -1;
     s_game.last_sent_dir = -1;      /* 尚未发送，首次摇杆输入必然触发 */
 
@@ -256,6 +334,14 @@ lv_obj_t *ui_game_screen_create(lv_obj_t *parent, ui_quit_cb_t on_quit, ui_dir_c
     lv_obj_add_flag(s_game.btn_left, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_game.btn_right, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_game.btn_down, LV_OBJ_FLAG_HIDDEN);
+
+    /* 环形地图技能栏（加速/护盾）：屏幕右侧纵向排列，默认隐藏，进入游戏后按地图类型切换 */
+    {
+        lv_obj_t *b0 = skill_key_create(scr, SKILL_SPEED,  706, 140);
+        lv_obj_t *b1 = skill_key_create(scr, SKILL_SHIELD, 706, 226);
+        lv_obj_add_flag(b0, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(b1, LV_OBJ_FLAG_HIDDEN);
+    }
 
     lv_obj_t *over = lv_obj_create(scr);                     /* 本局结束遮罩：默认隐藏，收到 over 消息后弹出 */
     lv_obj_set_size(over, 560, 260);
@@ -502,6 +588,22 @@ static void draw_board(void)
         }
     }
 
+    /* 技能道具（仅环形地图）：用 Speedup/Shield 图标渲染，200×200 缩放为 28×28，
+     * 中心对齐拾取物中心（lv_draw_img 的 zoom 以图片中心为锚点，故锚点偏移 100px） */
+    {
+        lv_draw_img_dsc_t id;
+        lv_draw_img_dsc_init(&id);
+        id.opa = LV_OPA_COVER;
+        id.zoom = (28 * 256) / 200;
+        for (i = 0; i < w->pickup_count; i++) {
+            int sx, sy;
+            world_to_screen(w->pickups[i].x, w->pickups[i].y, cam_x, cam_y, wrap, mapw, maph, hcx, hcy, &sx, &sy);
+            if (sx < -100 || sx > UI_CANVAS_W + 100 || sy < -100 || sy > UI_CANVAS_H + 100) continue;
+            lv_canvas_draw_img(s_game.canvas, sx - 100, sy - 100,
+                               (w->pickups[i].kind == SKILL_SPEED) ? &Speedup : &Shield, &id);
+        }
+    }
+
     /* 蛇：连续轨迹折线（像素坐标）。逐段画圆头粗线，并在各折点补圆点使拐角
      * 圆润、蛇身连续；无敌中的蛇先画白色粗线做护盾描边。跨环形缝合线的段跳过。 */
     for (i = 0; i < w->nsnakes; i++) {
@@ -527,12 +629,12 @@ static void draw_board(void)
             float fx, fy;
             if (sp) interp_pt(sp, s, j, &fx, &fy, wrap, mapw, maph, k);
             else { fx = (float)s->body[j].x; fy = (float)s->body[j].y; }
-            world_to_screen((int)fx, (int)fy, cam_x, cam_y, wrap, mapw, maph, hcx, hcy, &pts[j].x, &pts[j].y);
+            world_to_screen((int)fx, (int)fy, cam_x, cam_y, wrap, mapw, maph, hcx, hcy, (int *)&pts[j].x, (int *)&pts[j].y);
         }
 
         lv_color_t base  = ui_palette_color(s->color);
         lv_color_t headc = lv_color_mix(base, lv_color_white(), 96);
-        const int inv = (s->inv > 0);
+        const int inv = (s->inv > 0 || s->skill_shield_ticks > 0);   /* 出生无敌 或 护盾技能激活 → 白描边 */
 
         /* 无敌护盾：白色粗线描边（画在主体线之下） */
         if (inv) {
@@ -630,6 +732,14 @@ void ui_game_update(lv_obj_t *s, const snake_world_t *w)
             if (joy) lv_obj_clear_flag(s_game.joy_base, LV_OBJ_FLAG_HIDDEN);
             else     lv_obj_add_flag(s_game.joy_base, LV_OBJ_FLAG_HIDDEN);
         }
+        /* 技能栏：仅环形地图显示（隐藏/显示按钮本体） */
+        if (s_game.skill_btns[0]) {
+            if (joy) { lv_obj_clear_flag(s_game.skill_btns[0], LV_OBJ_FLAG_HIDDEN);
+                       lv_obj_clear_flag(s_game.skill_btns[1], LV_OBJ_FLAG_HIDDEN); }
+            else     { lv_obj_add_flag(s_game.skill_btns[0], LV_OBJ_FLAG_HIDDEN);
+                       lv_obj_add_flag(s_game.skill_btns[1], LV_OBJ_FLAG_HIDDEN); }
+        }
+        skill_bar_update(w);
     }
 
     const snake_player_t *me = NULL;

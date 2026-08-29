@@ -66,6 +66,12 @@ static void send_dir(snake_dir_t d)
     net_send_msg(MSG_DIR, &b, 1);
 }
 
+static void send_use_skill(int skill)
+{
+    uint8_t b = (uint8_t)skill;   /* 0=加速, 1=护盾 */
+    net_send_msg(MSG_USE_SKILL, &b, 1);
+}
+
 static void send_room_list(void)    { net_send_msg(MSG_ROOM_LIST, NULL, 0); }
 static void send_create_room(void)
 {
@@ -150,6 +156,11 @@ static void on_dir(snake_dir_t d)
     send_dir(d);
 }
 
+static void on_skill(int skill)
+{
+    send_use_skill(skill);
+}
+
 /* ---------------- 断线 ---------------- */
 static void handle_disconnect(void)
 {
@@ -201,7 +212,7 @@ static void handle_message(uint8_t type, const uint8_t *p, int plen)
             s_world.cols = pr_get_u16(p + 6);     /* 该房间地图尺寸 */
             s_world.rows = pr_get_u16(p + 8);
             snake_world_reset_round(&s_world);
-            if (!s_game_scr) s_game_scr = ui_game_screen_create(NULL, on_quit, on_dir);
+            if (!s_game_scr) s_game_scr = ui_game_screen_create(NULL, on_quit, on_dir, on_skill);
             ui_game_set_my_id(s_world.my_id);
             ui_game_clear_over(s_game_scr);
             ui_game_update(s_game_scr, &s_world);
