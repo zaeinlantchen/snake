@@ -48,8 +48,7 @@
  *    small_n ×    { px u16, py u16 }       小食物左上角像素坐标（4×4px）
  *    big_n        u8                       大食物数量
  *    big_n ×      { px u16, py u16 }       大食物左上角像素坐标（16×16px）
- *    pickup_n     u8                       技能道具数量（仅环形地图）
- *    pickup_n ×   { kind u8, px u16, py u16 }  技能道具中心像素坐标；kind: 0=加速, 1=护盾
+ *    pickup_n     u8                       技能道具数量（保留字段，恒为 0：技能改为吃食物获得）
  *    nsnakes      u8
  *    nsnakes ×    {
  *        id u32, color u8, len u16, score u16, inv u8, small_eaten u8,
@@ -58,9 +57,11 @@
  *        body[ len × { x u16, y u16 } ]    蛇身折线点像素坐标
  *    }
  *    技能说明（仅环形地图）：
- *    - skills 位图：bit0=持加速, bit1=持护盾（拾取到、未使用）；
- *    - speed_ticks / shield_ticks：对应技能效果剩余 ticks（>0 表示激活中，用完即失效）；
- *    - 每条蛇最多同时持有 2 个技能（加速/护盾各 1），拾取同类或已满不生效。
+ *    - 技能获取：不再地图拾取，改为吃食物获得——每吃 40 个小食物获得 1 次护盾、
+ *      每吃 3 个大食物获得 1 次加速；每个技能最多同时持有 1 个（skills 对应位=1），
+ *      直到该技能被使用且效果结束（对应 ticks 归 0）后才能再次获得；
+ *    - skills 位图：bit0=持加速, bit1=持护盾（获得、未使用）；
+ *    - speed_ticks / shield_ticks：对应技能效果剩余 ticks（>0 表示激活中，用完即失效）。
  *    蛇身说明（连续移动模型，像素级）：
  *    - 蛇头像素级连续前进（每 TICK_MS 前进 20px），身体 = 蛇头走过的折线轨迹；
  *    - body[0] 为蛇头（像素坐标，中心点），后续点为轨迹，相邻两点沿路径间距约 20px；
@@ -143,8 +144,9 @@
 #define SKILL_SHIELD        1       /* 技能类型：护盾 */
 #define SKILL_BIT_SPEED     0x01    /* 持有/激活位图：加速 */
 #define SKILL_BIT_SHIELD    0x02    /* 持有/激活位图：护盾 */
-#define SNAKE_PICKUP_MAX    4       /* 地图技能道具上限（2 加速 + 2 护盾） */
-#define SNAKE_SKILL_GEN_TICKS 100   /* 技能道具生成间隔（100 * TICK_MS = 10s） */
+#define SNAKE_SMALL_PER_SHIELD 40   /* 每吃 40 个小食物获得一次护盾 */
+#define SNAKE_BIG_PER_SPEED    3    /* 每吃 3 个大食物获得一次加速 */
+#define SNAKE_PICKUP_MAX    4       /* 技能道具保留数组上限（pickup_n 恒为 0，不再使用） */
 #define SKILL_SPEED_TICKS   50      /* 加速效果持续（50 * TICK_MS = 5s） */
 #define SKILL_SHIELD_TICKS  50      /* 护盾效果持续（50 * TICK_MS = 5s） */
 
