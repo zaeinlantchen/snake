@@ -27,7 +27,7 @@
 #include "page/inc/ui_page.h"
 
 /* 服务器 IP（固定）与端口 */
-#define SERVER_IP    "192.168.72.23"
+#define SERVER_IP    "192.168.46.133"
 #define NET_TIMEOUT_MS 3000
 
 /* ---------------- 模块状态 ---------------- */

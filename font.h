@@ -23,7 +23,7 @@ extern "C" {
 
 /* 中文字体文件路径（可修改，见文件头注释） */
 #ifndef UI_FONT_PATH
-#define UI_FONT_PATH "/fonts/STXINWEI.TTF"
+#define UI_FONT_PATH "" // 配置Freetype字体路径
 #endif
 
 /* 初始化 FreeType 中文字体（需在 lv_init() 之后、创建界面之前调用）。
